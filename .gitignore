@@ -1,0 +1,25 @@
+# Ignore cursor files
+.cursor/
+
+# Ignore cursor workspace files
+*.code-workspace
+
+# Ignore python cache files
+__pycache__/
+
+# Ignore venv files
+venv/
+.venv/
+
+# Ignore .env files
+.env
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Tool caches
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/

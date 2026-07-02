@@ -1,0 +1,2 @@
+# Dev dependencies (see pyproject.toml [project.optional-dependencies.dev]).
+-e .[dev]
