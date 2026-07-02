@@ -1,5 +1,6 @@
-# Ignore cursor files
-.cursor/
+# Ignore cursor files, but include the skills folder
+.cursor/*
+!.cursor/skills/
 
 # Ignore cursor workspace files
 *.code-workspace
