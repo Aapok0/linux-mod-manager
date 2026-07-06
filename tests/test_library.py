@@ -32,7 +32,7 @@ def test_import_mod_copies_external_dir(
     source.mkdir(parents=True)
     (source / "mod.manifest").write_text("test", encoding="utf-8")
     state = State()
-    _, updated_state, record = import_mod(
+    updated_state, record = import_mod(
         config_with_game,
         state,
         source,
@@ -58,7 +58,7 @@ def test_import_mod_registers_existing_library_path(
     )
     existing.mkdir(parents=True)
     state = State()
-    _, updated_state, record = import_mod(
+    updated_state, record = import_mod(
         config_with_game,
         state,
         existing,
@@ -79,7 +79,7 @@ def test_import_mod_unknown_game(config_with_game: Config, tmp_path: Path) -> No
 def test_list_mods_filters_by_game(config_with_game: Config, tmp_path: Path) -> None:
     source = tmp_path / "mod-a"
     source.mkdir()
-    _, state, _ = import_mod(config_with_game, State(), source, game_id="kcd2")
+    state, _ = import_mod(config_with_game, State(), source, game_id="kcd2")
     other = add_game_profile(
         config_with_game,
         "other",
@@ -88,7 +88,7 @@ def test_list_mods_filters_by_game(config_with_game: Config, tmp_path: Path) -> 
     )
     source_b = tmp_path / "mod-b"
     source_b.mkdir()
-    _, state, _ = import_mod(other, state, source_b, game_id="other")
+    state, _ = import_mod(other, state, source_b, game_id="other")
     kcd2_mods = list_mods(state, "kcd2")
     assert len(kcd2_mods) == 1
     assert kcd2_mods[0].game == "kcd2"

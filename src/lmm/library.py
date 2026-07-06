@@ -6,6 +6,12 @@ import shutil
 from pathlib import Path
 
 from lmm.config import Config
+from lmm.paths import (
+    PathValidationError,
+    path_within_root,
+    resolve_under_root,
+    validate_path_segment,
+)
 from lmm.state import ModRecord, State, add_mod_record
 
 
@@ -19,8 +25,11 @@ def game_library_dir(config: Config, game_id: str) -> Path:
         msg = f"Unknown game profile: {game_id}"
         raise LibraryError(msg)
     if profile.library_subpath:
-        return config.library_root / profile.library_subpath
-    return config.library_root / game_id
+        return resolve_under_root(
+            config.library_root,
+            profile.library_subpath,
+        )
+    return resolve_under_root(config.library_root, game_id)
 
 
 def resolve_mod_destination(
@@ -28,15 +37,8 @@ def resolve_mod_destination(
     game_id: str,
     name: str,
 ) -> Path:
-    return game_library_dir(config, game_id) / name
-
-
-def _path_within_root(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except ValueError:
-        return False
-    return True
+    validated_name = validate_path_segment(name, field="mod name")
+    return resolve_under_root(game_library_dir(config, game_id), validated_name)
 
 
 def import_mod(
@@ -49,7 +51,7 @@ def import_mod(
     nexus_mod_id: int | None = None,
     target: int | str | None = None,
     copy: bool = True,
-) -> tuple[Config, State, ModRecord]:
+) -> tuple[State, ModRecord]:
     if game_id not in config.games:
         msg = f"Unknown game profile: {game_id}"
         raise LibraryError(msg)
@@ -62,21 +64,31 @@ def import_mod(
         msg = f"Mod path is not a directory: {source}"
         raise LibraryError(msg)
 
-    mod_name = name or source.name
-    library_root = config.library_root.resolve()
+    try:
+        mod_name = validate_path_segment(name or source.name, field="mod name")
+        library_root = config.library_root.resolve()
+        game_dir = game_library_dir(config, game_id)
 
-    if _path_within_root(source, library_root):
-        destination = source
-    else:
-        destination = resolve_mod_destination(config, game_id, mod_name)
-        if destination.exists():
-            msg = f"Destination already exists: {destination}"
-            raise LibraryError(msg)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if copy:
-            shutil.copytree(source, destination)
+        if path_within_root(source, library_root):
+            if not path_within_root(source, game_dir):
+                msg = (
+                    f"Mod path is in the library but not under this game's directory: "
+                    f"{source} (expected under {game_dir})"
+                )
+                raise LibraryError(msg)
+            destination = source
         else:
-            shutil.move(str(source), str(destination))
+            destination = resolve_mod_destination(config, game_id, mod_name)
+            if destination.exists():
+                msg = f"Destination already exists: {destination}"
+                raise LibraryError(msg)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if copy:
+                shutil.copytree(source, destination)
+            else:
+                shutil.move(str(source), str(destination))
+    except PathValidationError as exc:
+        raise LibraryError(str(exc)) from exc
 
     record = ModRecord(
         name=mod_name,
@@ -86,13 +98,15 @@ def import_mod(
         target=target,
     )
     updated_state = add_mod_record(state, record)
-    return config, updated_state, record
+    return updated_state, record
 
 
 def list_mods(state: State, game_id: str | None = None) -> list[ModRecord]:
     if game_id is None:
-        return list(state.mods)
-    return [mod for mod in state.mods if mod.game == game_id]
+        mods = list(state.mods)
+    else:
+        mods = [mod for mod in state.mods if mod.game == game_id]
+    return sorted(mods, key=lambda mod: (mod.game, mod.name))
 
 
 def mod_is_deployed(mod: ModRecord) -> bool:

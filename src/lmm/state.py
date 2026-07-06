@@ -5,14 +5,20 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from datetime import datetime
+from json import JSONDecodeError
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from lmm.io import atomic_write
 from lmm.paths import default_state_path
 
 CURRENT_SCHEMA_VERSION = 1
+
+
+class StateError(Exception):
+    """Raised when state cannot be loaded or saved."""
 
 
 class DeployedLink(BaseModel):
@@ -67,11 +73,14 @@ MIGRATIONS: dict[int, Migration] = {}
 
 def migrate_state(raw: dict[str, Any]) -> dict[str, Any]:
     version = int(raw.get("schema_version", 0))
+    if version > CURRENT_SCHEMA_VERSION:
+        msg = f"Unsupported state schema version: {version}"
+        raise StateError(msg)
     while version < CURRENT_SCHEMA_VERSION:
         migration = MIGRATIONS.get(version)
         if migration is None:
             msg = f"Unsupported state schema version: {version}"
-            raise ValueError(msg)
+            raise StateError(msg)
         raw = migration(raw)
         version = int(raw.get("schema_version", version + 1))
     raw["schema_version"] = CURRENT_SCHEMA_VERSION
@@ -85,17 +94,33 @@ class StateStore:
     def load(self) -> State:
         if not self.path.exists():
             return State()
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
-        migrated = migrate_state(raw)
-        return State.model_validate(migrated)
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+            migrated = migrate_state(raw)
+            return State.model_validate(migrated)
+        except OSError as exc:
+            msg = f"Cannot read state at {self.path}: {exc}"
+            raise StateError(msg) from exc
+        except JSONDecodeError as exc:
+            msg = f"Invalid JSON in state at {self.path}: {exc}"
+            raise StateError(msg) from exc
+        except ValidationError as exc:
+            msg = f"Invalid state at {self.path}: {exc}"
+            raise StateError(msg) from exc
+        except StateError:
+            raise
+        except ValueError as exc:
+            msg = f"Invalid state at {self.path}: {exc}"
+            raise StateError(msg) from exc
 
     def save(self, state: State) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = state.model_dump(mode="json")
-        self.path.write_text(
-            json.dumps(payload, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        content = json.dumps(payload, indent=2) + "\n"
+        try:
+            atomic_write(self.path, content)
+        except OSError as exc:
+            msg = f"Cannot write state to {self.path}: {exc}"
+            raise StateError(msg) from exc
 
 
 def find_mod(

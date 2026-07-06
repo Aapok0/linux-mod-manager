@@ -93,6 +93,36 @@ def test_p1_add_mod_and_list(
     assert mods[0]["game"] == "kcd2"
 
 
+def test_mod_list_accepts_positional_game(
+    runner: CliRunner,
+    data_dir: Path,
+    cli_args: list[str],
+    game_target: Path,
+) -> None:
+    runner.invoke(
+        app,
+        [
+            *cli_args,
+            "game",
+            "add",
+            "kcd2",
+            "--domain",
+            "kingdomcomedeliverance2",
+            "--target",
+            str(game_target),
+        ],
+    )
+    mod_source = data_dir / "moddir"
+    mod_source.mkdir()
+    runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
+
+    list_result = runner.invoke(app, [*cli_args, "--json", "list", "kcd2"])
+    assert list_result.exit_code == 0, list_result.output
+    mods = json.loads(list_result.stdout)
+    assert len(mods) == 1
+    assert mods[0]["game"] == "kcd2"
+
+
 def test_config_and_state_round_trip_via_cli(
     runner: CliRunner,
     data_dir: Path,

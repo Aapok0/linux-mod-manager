@@ -19,14 +19,40 @@ Acceptance:
 
 ## P2 - Deploy
 
-Scope: the symlink engine, the core value over plain stow.
+Scope: symlink engine, default deploy targets, and library UX for the common case.
 
-- [ ] `deploy.py`: build link plan, conflict detection, create + record links.
+Design principle: **most mods use the game's default paths; overrides are for exceptions only.**
+
+### Default paths (per game profile)
+
+| Path kind | Game default | Per-mod override |
+|-----------|--------------|------------------|
+| **Library** (mod storage) | `library_root` + `library_subpath` (or `game_id`) | set implicitly via `source_path` at import |
+| **Deploy** (symlink into game) | `targets[0]` — the primary game mod directory | `ModRecord.target`: `null` = default; int = `targets[n]`; str = absolute path |
+
+Register the default deploy dir once on `game add`:
+
+```bash
+lmm game add kcd2 --domain kingdomcomedeliverance2 \
+  --target "/path/to/game/Mods" \
+  --library-subpath "KingdomComeDeliverance2/Mods"
+```
+
+Add extra deploy dirs only when a game needs them (e.g. Oblivion pak + binaries). Most mods never need `--target-index` or `--target-path`.
+
+### P2 tasks
+
+- [ ] `deploy.py`: `resolve_deploy_target(config, mod) -> Path`; build link plan, conflict detection, create + record links.
+- [ ] Deploy uses `targets[0]` for every enabled mod unless `mod.target` overrides.
 - [ ] CLI: `deploy`, `undeploy`, `enable`, `disable`, plus global `--dry-run`.
+- [ ] CLI: split deploy override flags — `--target-index N` and `--target-path PATH` on `lmm add` (replace ambiguous `--target`).
+- [ ] CLI: `lmm add <name_or_path> --game <id>` — when arg is a bare mod name (no slashes), resolve to `game_library_dir/<name>` if that directory exists.
 - [ ] Record `deployed_links` (and created dirs) in state; `undeploy` removes only recorded links.
 
 Acceptance:
-- `lmm deploy kcd2` symlinks enabled mods into the target; links appear in state.
+- `lmm deploy kcd2` symlinks all enabled mods into `targets[0]`; no per-mod target needed for the common case.
+- A mod with `--target-index 1` or `--target-path` deploys only to that override; other mods still use the default.
+- `lmm add easysharpening --game kcd2` works when `library_root/.../easysharpening` already exists.
 - `lmm undeploy kcd2` removes exactly those links and any lmm-created empty dirs; no real game files touched.
 - Foreign file at a target path is reported as a conflict and skipped, not overwritten.
 - `--dry-run` prints the plan and changes nothing.

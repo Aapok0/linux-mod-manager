@@ -22,7 +22,7 @@ Nexus Mods version-update checking.
 - Interface: CLI subcommands, binary name `lmm`.
 - Deployment: symlinks, stow-like, every created link recorded so removal is exact and safe.
 - Nexus: free account, check-only. No downloads via API. Local state file is the source of truth and works offline.
-- Games: config-driven per-game profiles. A profile may have multiple deploy targets; a mod may override its target. Proton/Wine prefix mapping is deferred.
+- Games: config-driven per-game profiles. Each game has a **default deploy target** (`targets[0]`) and **default library subpath**; per-mod `target` overrides deploy dir for exceptions only. Proton/Wine prefix mapping is deferred.
 
 ## When working in this project
 
@@ -49,16 +49,16 @@ flowchart LR
 
 ## CLI surface
 
-Global options: `--config PATH`, `--dry-run`, `-v/--verbose`, `--json`.
+Global options: `--config PATH`, `--dry-run`, `--json`.
 
 | Command | Purpose |
 |---------|---------|
-| `lmm game add <id> --domain <nexus_domain> --target <path> [--target ...]` | Register a game profile |
+| `lmm game add <id> --domain <nexus_domain> --target <path> [--target ...] [--library-subpath PATH]` | Register a game profile; first `--target` is the default deploy dir |
 | `lmm game list` | List configured game profiles |
-| `lmm add <path> --game <id> [--mod-id N] [--name NAME] [--target PATH]` | Import a mod dir/archive into the library and record it in state |
+| `lmm add <name_or_path> --game <id> [--mod-id N] [--name NAME] [--target-index N \| --target-path PATH]` | Import/register a mod; bare name resolves under game's library dir (P2) |
 | `lmm list [game]` | List mods (name, game, version, enabled, deployed) |
 | `lmm enable <mod>` / `lmm disable <mod>` | Toggle whether a mod deploys |
-| `lmm deploy <game>` | Create recorded symlinks for enabled mods into target(s) |
+| `lmm deploy <game>` | Symlink enabled mods into each mod's deploy target (default: `targets[0]`) |
 | `lmm undeploy <game>` | Remove only the symlinks recorded in state |
 | `lmm identify [game]` | md5_search local files -> Nexus mod_id/version, fill state |
 | `lmm check [game]` | Compare installed version vs Nexus latest; report updates (no download) |
