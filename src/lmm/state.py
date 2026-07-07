@@ -47,6 +47,7 @@ class ModRecord(BaseModel):
     installed_version: str | None = None
     file_md5: str | None = None
     deployed_links: list[DeployedLink] = Field(default_factory=list)
+    created_dirs: list[Path] = Field(default_factory=list)
     last_checked: datetime | None = None
     update_available: bool = False
     latest_version: str | None = None
@@ -60,6 +61,16 @@ class ModRecord(BaseModel):
             return Path(value)
         msg = "source_path must be a path"
         raise TypeError(msg)
+
+    @field_validator("created_dirs", mode="before")
+    @classmethod
+    def _coerce_created_dirs(cls, value: object) -> list[Path]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            msg = "created_dirs must be a list of paths"
+            raise TypeError(msg)
+        return [item if isinstance(item, Path) else Path(str(item)) for item in value]
 
 
 class State(BaseModel):
@@ -154,3 +165,42 @@ def add_mod_record(state: State, record: ModRecord) -> State:
     updated = state.model_copy(deep=True)
     updated.mods.append(record)
     return updated
+
+
+def mods_referencing_target_index(
+    state: State, game_id: str, index: int
+) -> list[ModRecord]:
+    return [
+        mod
+        for mod in state.mods
+        if mod.game == game_id and mod.target == index
+    ]
+
+
+def adjust_mod_targets_after_remove(
+    state: State, game_id: str, removed_index: int
+) -> State:
+    updated = state.model_copy(deep=True)
+    for idx, mod in enumerate(updated.mods):
+        if mod.game != game_id or not isinstance(mod.target, int):
+            continue
+        if mod.target > removed_index:
+            updated.mods[idx] = mod.model_copy(update={"target": mod.target - 1})
+    return updated
+
+
+def set_mod_enabled(
+    state: State,
+    reference: str,
+    *,
+    enabled: bool,
+    default_game: str | None = None,
+) -> State:
+    mod = find_mod(state, reference, default_game=default_game)
+    updated = state.model_copy(deep=True)
+    for index, entry in enumerate(updated.mods):
+        if entry.game == mod.game and entry.name == mod.name:
+            updated.mods[index] = entry.model_copy(update={"enabled": enabled})
+            return updated
+    msg = f"Mod not found: {reference}"
+    raise KeyError(msg)

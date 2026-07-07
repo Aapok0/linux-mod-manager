@@ -55,6 +55,9 @@ Global options: `--config PATH`, `--dry-run`, `--json`.
 |---------|---------|
 | `lmm game add <id> --domain <nexus_domain> --target <path> [--target ...] [--library-subpath PATH]` | Register a game profile; first `--target` is the default deploy dir |
 | `lmm game list` | List configured game profiles |
+| `lmm game target add <id> --target <path> [--target ...]` | Append deploy target(s) to an existing game profile |
+| `lmm game target list <id>` | List deploy targets with indices for `--target-index` |
+| `lmm game target remove <id> --index <n> [--index ...]` | Remove secondary deploy target(s); index 0 cannot be removed |
 | `lmm add <name_or_path> --game <id> [--mod-id N] [--name NAME] [--target-index N \| --target-path PATH]` | Import/register a mod; bare name resolves under game's library dir (P2) |
 | `lmm list [game]` | List mods (name, game, version, enabled, deployed) |
 | `lmm enable <mod>` / `lmm disable <mod>` | Toggle whether a mod deploys |

@@ -40,14 +40,20 @@ lmm game add kcd2 --domain kingdomcomedeliverance2 \
 
 Add extra deploy dirs only when a game needs them (e.g. Oblivion pak + binaries). Most mods never need `--target-index` or `--target-path`.
 
+```bash
+lmm game target add oblivion --target "/path/to/game/Data"
+lmm game target list oblivion
+```
+
 ### P2 tasks
 
-- [ ] `deploy.py`: `resolve_deploy_target(config, mod) -> Path`; build link plan, conflict detection, create + record links.
-- [ ] Deploy uses `targets[0]` for every enabled mod unless `mod.target` overrides.
-- [ ] CLI: `deploy`, `undeploy`, `enable`, `disable`, plus global `--dry-run`.
-- [ ] CLI: split deploy override flags — `--target-index N` and `--target-path PATH` on `lmm add` (replace ambiguous `--target`).
-- [ ] CLI: `lmm add <name_or_path> --game <id>` — when arg is a bare mod name (no slashes), resolve to `game_library_dir/<name>` if that directory exists.
-- [ ] Record `deployed_links` (and created dirs) in state; `undeploy` removes only recorded links.
+- [x] `deploy.py`: `resolve_deploy_target(config, mod) -> Path`; build link plan, conflict detection, create + record links.
+- [x] Deploy uses `targets[0]` for every enabled mod unless `mod.target` overrides.
+- [x] CLI: `deploy`, `undeploy`, `enable`, `disable`, plus global `--dry-run`.
+- [x] CLI: split deploy override flags — `--target-index N` and `--target-path PATH` on `lmm add` (replace ambiguous `--target`).
+- [x] CLI: `lmm add <name_or_path> --game <id>` — when arg is a bare mod name (no slashes), resolve to `game_library_dir/<name>` if that directory exists.
+- [x] CLI: `game target add`, `game target list`, `game target remove` — manage deploy targets after `game add`.
+- [x] Record `deployed_links` (and created dirs) in state; `undeploy` removes only recorded links.
 
 Acceptance:
 - `lmm deploy kcd2` symlinks all enabled mods into `targets[0]`; no per-mod target needed for the common case.

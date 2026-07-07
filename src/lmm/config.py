@@ -152,3 +152,42 @@ def add_game_profile(
         library_subpath=library_subpath,
     )
     return updated
+
+
+def _require_game_profile(config: Config, game_id: str) -> GameProfile:
+    profile = config.games.get(game_id)
+    if profile is None:
+        msg = f"Unknown game profile: {game_id}"
+        raise ValueError(msg)
+    return profile
+
+
+def add_game_target(config: Config, game_id: str, target: Path) -> Config:
+    profile = _require_game_profile(config, game_id)
+    resolved = target.resolve()
+    for existing in profile.targets:
+        if existing.resolve() == resolved:
+            msg = f"Deploy target already configured: {target}"
+            raise ValueError(msg)
+    updated = config.model_copy(deep=True)
+    updated.games[game_id].targets.append(target)
+    return updated
+
+
+def remove_game_target(config: Config, game_id: str, index: int) -> Config:
+    profile = _require_game_profile(config, game_id)
+    if index == 0:
+        msg = "Cannot remove primary deploy target (index 0)"
+        raise ValueError(msg)
+    if len(profile.targets) == 1:
+        msg = f"Game profile {game_id} must keep at least one deploy target"
+        raise ValueError(msg)
+    if index < 0 or index >= len(profile.targets):
+        msg = (
+            f"Deploy target index {index} out of range for game "
+            f"{game_id} (0-{len(profile.targets) - 1})"
+        )
+        raise ValueError(msg)
+    updated = config.model_copy(deep=True)
+    del updated.games[game_id].targets[index]
+    return updated

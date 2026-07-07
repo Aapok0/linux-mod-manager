@@ -43,7 +43,7 @@ deploy_method = "symlink"
 
 Notes:
 - Resolution order for the API key: `NEXUS_API_KEY` env var, then `nexus_api_key` in config. Never log it.
-- **`targets[0]` is the default deploy directory** for the game. Set it once on `game add`; most mods deploy there without any per-mod setting.
+- **`targets[0]` is the default deploy directory** for the game. Set on `game add`; add more later with `game target add`. Most mods deploy to `targets[0]` without any per-mod setting.
 - Additional `targets` entries (index 1, 2, …) exist for the few mods that need a different game directory. Override via `ModRecord.target`.
 - **`library_subpath`** is the default library directory for the game's mods under `library_root`.
 - Paths may contain spaces; always quote/escape and use `pathlib.Path`, never shell string concatenation.
@@ -68,6 +68,7 @@ Notes:
       "installed_version": null,
       "file_md5": null,
       "deployed_links": [],
+      "created_dirs": [],
       "last_checked": null,
       "update_available": false,
       "latest_version": null
@@ -132,6 +133,7 @@ Rules:
 
 Most games: one default deploy dir (`targets[0]`) and one library subpath. Oblivion-style games may list multiple deploy targets; only exception mods set `target`.
 
+- `lmm game target add/list/remove` manage `profile.targets` after registration. Index 0 is the primary default and cannot be removed. Removing index `n` decrements `mod.target` for mods with higher indices; removal is blocked if any mod references that index.
 - `lmm add` accepts `--target-index N` or `--target-path PATH` for those exceptions (P2). Omit both for the default.
 - `lmm add <mod_name> --game <id>` (P2): when the argument has no path separators and `game_library_dir/<mod_name>` exists, register that directory without a full path.
 - A future enhancement: per-mod, per-subpath routing rules. Keep the data model open but implement only single-target-per-mod in P2.

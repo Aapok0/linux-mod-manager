@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from lmm.config import Config, ConfigStore, GameProfile, add_game_profile
+from lmm.config import (
+    Config,
+    ConfigStore,
+    GameProfile,
+    add_game_profile,
+    add_game_target,
+)
 
 
 def test_config_round_trip(tmp_path: Path) -> None:
@@ -80,3 +86,20 @@ def test_saved_toml_is_readable(tmp_path: Path) -> None:
     )
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     assert raw["games"]["kcd2"]["nexus_domain"] == "kingdomcomedeliverance2"
+
+
+def test_add_game_target_round_trip(tmp_path: Path) -> None:
+    primary = tmp_path / "game" / "Mods"
+    secondary = tmp_path / "game" / "Data"
+    config = add_game_profile(
+        Config(library_root=tmp_path / "library"),
+        "kcd2",
+        nexus_domain="kingdomcomedeliverance2",
+        targets=[primary],
+    )
+    updated = add_game_target(config, "kcd2", secondary)
+    path = tmp_path / "config.toml"
+    store = ConfigStore(path)
+    store.save(updated)
+    loaded = store.load()
+    assert loaded.games["kcd2"].targets == [primary, secondary]

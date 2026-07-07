@@ -41,6 +41,24 @@ def resolve_mod_destination(
     return resolve_under_root(game_library_dir(config, game_id), validated_name)
 
 
+def resolve_mod_source(config: Config, game_id: str, name_or_path: Path) -> Path:
+    """Resolve bare mod name to game_library_dir/name when that directory exists."""
+    arg = str(name_or_path)
+    if (
+        not name_or_path.is_absolute()
+        and "/" not in arg
+        and "\\" not in arg
+        and game_id in config.games
+    ):
+        try:
+            candidate = resolve_mod_destination(config, game_id, arg)
+            if candidate.is_dir():
+                return candidate.resolve()
+        except PathValidationError as exc:
+            raise LibraryError(str(exc)) from exc
+    return name_or_path.resolve()
+
+
 def import_mod(
     config: Config,
     state: State,
