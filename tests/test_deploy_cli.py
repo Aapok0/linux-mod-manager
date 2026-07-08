@@ -12,25 +12,11 @@ from lmm.state import StateStore
 
 def test_cli_deploy_and_undeploy(
     runner: CliRunner,
-    data_dir: Path,
     cli_args: list[str],
     game_target: Path,
+    kcd2_profile: None,
+    data_dir: Path,
 ) -> None:
-    runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kcd",
-            "--target",
-            str(game_target),
-            "--library-subpath",
-            "KCD2/Mods",
-        ],
-    )
     mod_source = data_dir / "incoming" / "moda"
     mod_source.mkdir(parents=True)
     (mod_source / "file.txt").write_text("x", encoding="utf-8")
@@ -52,23 +38,8 @@ def test_cli_add_bare_mod_name(
     runner: CliRunner,
     data_dir: Path,
     cli_args: list[str],
-    game_target: Path,
+    kcd2_profile: None,
 ) -> None:
-    runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kcd",
-            "--target",
-            str(game_target),
-            "--library-subpath",
-            "KCD2/Mods",
-        ],
-    )
     library_root = data_dir / "library"
     mod_dir = library_root / "KCD2/Mods/easysharpening"
     mod_dir.mkdir(parents=True)
@@ -82,28 +53,10 @@ def test_cli_add_bare_mod_name(
 
 def test_cli_enable_disable(
     runner: CliRunner,
-    data_dir: Path,
     cli_args: list[str],
     game_target: Path,
+    kcd2_with_mod_minimal: Path,
 ) -> None:
-    runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kcd",
-            "--target",
-            str(game_target),
-        ],
-    )
-    mod_source = data_dir / "mod"
-    mod_source.mkdir()
-    (mod_source / "a.txt").write_text("a", encoding="utf-8")
-    runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
-
     disable = runner.invoke(app, [*cli_args, "disable", "mod", "--game", "kcd2"])
     assert disable.exit_code == 0, disable.output
 
@@ -120,27 +73,11 @@ def test_cli_enable_disable(
 
 def test_cli_disable_after_deploy_removes_links(
     runner: CliRunner,
-    data_dir: Path,
     cli_args: list[str],
     game_target: Path,
+    kcd2_with_mod_minimal: Path,
+    data_dir: Path,
 ) -> None:
-    runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kcd",
-            "--target",
-            str(game_target),
-        ],
-    )
-    mod_source = data_dir / "mod"
-    mod_source.mkdir()
-    (mod_source / "a.txt").write_text("a", encoding="utf-8")
-    runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
     runner.invoke(app, [*cli_args, "deploy", "kcd2"])
     assert (game_target / "a.txt").is_symlink()
 
@@ -173,28 +110,11 @@ def test_cli_enable_disable_missing_mod_reports_error(
 
 def test_cli_dry_run_deploy(
     runner: CliRunner,
-    data_dir: Path,
     cli_args: list[str],
     game_target: Path,
+    kcd2_with_mod_minimal: Path,
+    data_dir: Path,
 ) -> None:
-    runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kcd",
-            "--target",
-            str(game_target),
-        ],
-    )
-    mod_source = data_dir / "mod"
-    mod_source.mkdir()
-    (mod_source / "a.txt").write_text("a", encoding="utf-8")
-    runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
-
     result = runner.invoke(app, [*cli_args, "--dry-run", "deploy", "kcd2"])
     assert result.exit_code == 0, result.output
     assert not (game_target / "a.txt").exists()

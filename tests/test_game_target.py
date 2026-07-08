@@ -119,21 +119,9 @@ def test_cli_game_target_add_list_remove(
     data_dir: Path,
     cli_args: list[str],
     game_target: Path,
+    kcd2_profile_minimal: None,
 ) -> None:
     alt_target = game_target.parent / "Data"
-    runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kingdomcomedeliverance2",
-            "--target",
-            str(game_target),
-        ],
-    )
     add_result = runner.invoke(
         app,
         [

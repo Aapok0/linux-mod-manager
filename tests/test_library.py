@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from lmm.config import Config, add_game_profile
-from lmm.library import LibraryError, import_mod, list_mods
+from lmm.library import LibraryError, import_mod, list_mods, resolve_mod_source
 from lmm.state import State
 
 
@@ -92,3 +92,12 @@ def test_list_mods_filters_by_game(config_with_game: Config, tmp_path: Path) -> 
     kcd2_mods = list_mods(state, "kcd2")
     assert len(kcd2_mods) == 1
     assert kcd2_mods[0].game == "kcd2"
+
+
+def test_resolve_mod_source_bare_name(config_with_game: Config) -> None:
+    mod_dir = (
+        config_with_game.library_root / "KingdomComeDeliverance2/Mods/easysharpening"
+    )
+    mod_dir.mkdir(parents=True)
+    resolved = resolve_mod_source(config_with_game, "kcd2", Path("easysharpening"))
+    assert resolved == mod_dir.resolve()

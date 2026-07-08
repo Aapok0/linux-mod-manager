@@ -17,22 +17,9 @@ def test_p1_game_add_and_list(
     data_dir: Path,
     cli_args: list[str],
     game_target: Path,
+    kcd2_p1_game_args: list[str],
 ) -> None:
-    result = runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kingdomcomedeliverance2",
-            "--target",
-            str(game_target),
-            "--library-subpath",
-            "KingdomComeDeliverance2/Mods",
-        ],
-    )
+    result = runner.invoke(app, [*cli_args, *kcd2_p1_game_args])
     assert result.exit_code == 0, result.output
     config = ConfigStore(data_dir / "config.toml").load()
     assert "kcd2" in config.games
@@ -50,23 +37,8 @@ def test_p1_add_mod_and_list(
     runner: CliRunner,
     data_dir: Path,
     cli_args: list[str],
-    game_target: Path,
+    kcd2_p1_profile: None,
 ) -> None:
-    runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kingdomcomedeliverance2",
-            "--target",
-            str(game_target),
-            "--library-subpath",
-            "KingdomComeDeliverance2/Mods",
-        ],
-    )
     mod_source = data_dir / "incoming" / "easysharpening"
     mod_source.mkdir(parents=True)
     (mod_source / "mod.manifest").write_text("{}", encoding="utf-8")
@@ -95,23 +67,10 @@ def test_p1_add_mod_and_list(
 
 def test_mod_list_accepts_positional_game(
     runner: CliRunner,
-    data_dir: Path,
     cli_args: list[str],
-    game_target: Path,
+    kcd2_profile_minimal: None,
+    data_dir: Path,
 ) -> None:
-    runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kingdomcomedeliverance2",
-            "--target",
-            str(game_target),
-        ],
-    )
     mod_source = data_dir / "moddir"
     mod_source.mkdir()
     runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
@@ -127,21 +86,8 @@ def test_config_and_state_round_trip_via_cli(
     runner: CliRunner,
     data_dir: Path,
     cli_args: list[str],
-    game_target: Path,
+    kcd2_profile_minimal: None,
 ) -> None:
-    runner.invoke(
-        app,
-        [
-            *cli_args,
-            "game",
-            "add",
-            "kcd2",
-            "--domain",
-            "kingdomcomedeliverance2",
-            "--target",
-            str(game_target),
-        ],
-    )
     mod_source = data_dir / "moddir"
     mod_source.mkdir()
     runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
@@ -153,6 +99,6 @@ def test_config_and_state_round_trip_via_cli(
 
     reloaded_config = ConfigStore(data_dir / "config.toml").load()
     reloaded_state = StateStore(data_dir / "state.json").load()
-    assert reloaded_config.games["kcd2"].nexus_domain == "kingdomcomedeliverance2"
+    assert reloaded_config.games["kcd2"].nexus_domain == "kcd"
     assert len(reloaded_state.mods) == 1
     assert reloaded_state.mods[0].name == "moddir"
