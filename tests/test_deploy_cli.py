@@ -118,6 +118,59 @@ def test_cli_enable_disable(
     assert deploy2.exit_code == 0, deploy2.output
 
 
+def test_cli_disable_after_deploy_removes_links(
+    runner: CliRunner,
+    data_dir: Path,
+    cli_args: list[str],
+    game_target: Path,
+) -> None:
+    runner.invoke(
+        app,
+        [
+            *cli_args,
+            "game",
+            "add",
+            "kcd2",
+            "--domain",
+            "kcd",
+            "--target",
+            str(game_target),
+        ],
+    )
+    mod_source = data_dir / "mod"
+    mod_source.mkdir()
+    (mod_source / "a.txt").write_text("a", encoding="utf-8")
+    runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
+    runner.invoke(app, [*cli_args, "deploy", "kcd2"])
+    assert (game_target / "a.txt").is_symlink()
+
+    disable = runner.invoke(app, [*cli_args, "disable", "mod", "--game", "kcd2"])
+    assert disable.exit_code == 0, disable.output
+    assert (game_target / "a.txt").is_symlink()
+
+    deploy = runner.invoke(app, [*cli_args, "deploy", "kcd2"])
+    assert deploy.exit_code == 0, deploy.output
+    assert not (game_target / "a.txt").exists()
+    state = StateStore(data_dir / "state.json").load()
+    assert state.mods[0].enabled is False
+    assert len(state.mods[0].deployed_links) == 0
+
+
+def test_cli_enable_disable_missing_mod_reports_error(
+    runner: CliRunner,
+    cli_args: list[str],
+) -> None:
+    disable = runner.invoke(app, [*cli_args, "disable", "missing-mod"])
+    assert disable.exit_code == 1
+    assert "Mod not found" in disable.output
+    assert "Traceback" not in disable.output
+
+    enable = runner.invoke(app, [*cli_args, "enable", "missing-mod"])
+    assert enable.exit_code == 1
+    assert "Mod not found" in enable.output
+    assert "Traceback" not in enable.output
+
+
 def test_cli_dry_run_deploy(
     runner: CliRunner,
     data_dir: Path,

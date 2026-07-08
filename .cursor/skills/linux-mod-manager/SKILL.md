@@ -60,8 +60,8 @@ Global options: `--config PATH`, `--dry-run`, `--json`.
 | `lmm game target remove <id> --index <n> [--index ...]` | Remove secondary deploy target(s); index 0 cannot be removed |
 | `lmm add <name_or_path> --game <id> [--mod-id N] [--name NAME] [--target-index N \| --target-path PATH]` | Import/register a mod; bare name resolves under game's library dir (P2) |
 | `lmm list [game]` | List mods (name, game, version, enabled, deployed) |
-| `lmm enable <mod>` / `lmm disable <mod>` | Toggle whether a mod deploys |
-| `lmm deploy <game>` | Symlink enabled mods into each mod's deploy target (default: `targets[0]`) |
+| `lmm enable <mod>` / `lmm disable <mod>` | Toggle whether a mod deploys (run `deploy` afterward to apply) |
+| `lmm deploy <game>` | Reconcile game dir: remove disabled mods' links, symlink enabled mods |
 | `lmm undeploy <game>` | Remove only the symlinks recorded in state |
 | `lmm identify [game]` | md5_search local files -> Nexus mod_id/version, fill state |
 | `lmm check [game]` | Compare installed version vs Nexus latest; report updates (no download) |

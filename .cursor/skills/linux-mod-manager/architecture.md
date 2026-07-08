@@ -95,7 +95,8 @@ Mirrors the original `stow_mods` behavior (`stow -R` add / `stow -D` remove) but
 
 ```mermaid
 flowchart TD
-  start[deploy game] --> mods[Select enabled mods for game]
+  start[deploy game] --> reconcile[Remove links for disabled mods]
+  reconcile --> mods[Select enabled mods for game]
   mods --> walk[Walk each mod source tree]
   walk --> plan[Build link plan: source file -> target path]
   plan --> conflict{Target exists?}
@@ -127,7 +128,7 @@ Rules:
 - Remove now-empty directories that lmm created.
 - Clear `deployed_links` for affected mods; save state.
 
-`enable`/`disable` set the `enabled` flag; they do not touch the filesystem until the next `deploy`/`undeploy`.
+`enable`/`disable` set the `enabled` flag only; they do not touch the filesystem. Run `lmm deploy <game>` to apply changes: deploy removes links for disabled mods, then symlinks enabled mods. `undeploy` removes all recorded links for the game regardless of enabled flag.
 
 ## Multi-target and per-mod overrides
 

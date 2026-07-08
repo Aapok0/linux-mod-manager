@@ -143,7 +143,7 @@ def find_mod(
             if mod.game == game and mod.name == name:
                 return mod
         msg = f"Mod not found: {reference}"
-        raise KeyError(msg)
+        raise StateError(msg)
 
     matches = [mod for mod in state.mods if mod.name == reference]
     if default_game is not None:
@@ -152,9 +152,9 @@ def find_mod(
         return matches[0]
     if not matches:
         msg = f"Mod not found: {reference}"
-        raise KeyError(msg)
+        raise StateError(msg)
     msg = f"Ambiguous mod reference: {reference}"
-    raise KeyError(msg)
+    raise StateError(msg)
 
 
 def add_mod_record(state: State, record: ModRecord) -> State:
@@ -170,11 +170,7 @@ def add_mod_record(state: State, record: ModRecord) -> State:
 def mods_referencing_target_index(
     state: State, game_id: str, index: int
 ) -> list[ModRecord]:
-    return [
-        mod
-        for mod in state.mods
-        if mod.game == game_id and mod.target == index
-    ]
+    return [mod for mod in state.mods if mod.game == game_id and mod.target == index]
 
 
 def adjust_mod_targets_after_remove(
@@ -195,12 +191,13 @@ def set_mod_enabled(
     *,
     enabled: bool,
     default_game: str | None = None,
-) -> State:
+) -> tuple[State, ModRecord]:
     mod = find_mod(state, reference, default_game=default_game)
     updated = state.model_copy(deep=True)
     for index, entry in enumerate(updated.mods):
         if entry.game == mod.game and entry.name == mod.name:
-            updated.mods[index] = entry.model_copy(update={"enabled": enabled})
-            return updated
+            updated_mod = entry.model_copy(update={"enabled": enabled})
+            updated.mods[index] = updated_mod
+            return updated, updated_mod
     msg = f"Mod not found: {reference}"
-    raise KeyError(msg)
+    raise StateError(msg)

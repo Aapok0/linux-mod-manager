@@ -24,8 +24,10 @@ class PlannedLink:
 @dataclass
 class DeployOutcome:
     links_created: int = 0
+    links_removed: int = 0
     links_skipped: int = 0
     conflicts: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     dry_run: bool = False
 
 
@@ -35,6 +37,14 @@ class UndeployOutcome:
     links_skipped: int = 0
     warnings: list[str] = field(default_factory=list)
     dry_run: bool = False
+
+
+@dataclass
+class LinkRemovalResult:
+    mod: ModRecord
+    links_removed: int = 0
+    links_skipped: int = 0
+    warnings: list[str] = field(default_factory=list)
 
 
 def resolve_deploy_target(config: Config, mod: ModRecord) -> Path:
@@ -64,7 +74,11 @@ def _owned_link(link: Path, source: Path, mod: ModRecord) -> bool:
     resolved_link = link
     resolved_source = source.resolve()
     for deployed in mod.deployed_links:
-        if deployed.link == resolved_link or deployed.link.resolve() == resolved_link.resolve():
+        link_matches = (
+            deployed.link == resolved_link
+            or deployed.link.resolve() == resolved_link.resolve()
+        )
+        if link_matches:
             return deployed.source.resolve() == resolved_source
     return False
 
@@ -102,12 +116,66 @@ def _mkdir_parents(link: Path, created_dirs: list[Path], *, dry_run: bool) -> No
         ancestors.append(current)
         current = current.parent
     for directory in reversed(ancestors):
+        if directory in created_dirs:
+            continue
         if dry_run:
-            if directory not in created_dirs:
-                created_dirs.append(directory)
+            created_dirs.append(directory)
             continue
         directory.mkdir(exist_ok=True)
         created_dirs.append(directory)
+
+
+def _cleanup_created_dirs(mod: ModRecord, *, dry_run: bool) -> ModRecord:
+    if dry_run:
+        return mod.model_copy(update={"created_dirs": []})
+    for directory in sorted(
+        mod.created_dirs, key=lambda path: len(path.parts), reverse=True
+    ):
+        if directory.exists() and directory.is_dir() and not any(directory.iterdir()):
+            directory.rmdir()
+    return mod.model_copy(update={"created_dirs": []})
+
+
+def _remove_mod_links(mod: ModRecord, *, dry_run: bool) -> LinkRemovalResult:
+    current = mod.model_copy(deep=True)
+    result = LinkRemovalResult(mod=current)
+    for deployed in list(current.deployed_links):
+        link = deployed.link
+        source = deployed.source
+        if not link.exists():
+            result.warnings.append(f"Missing link (already removed): {link}")
+            current.deployed_links = [
+                item for item in current.deployed_links if item.link != deployed.link
+            ]
+            result.links_skipped += 1
+            continue
+        if not link.is_symlink():
+            result.warnings.append(f"Not a symlink, skipping: {link}")
+            result.links_skipped += 1
+            continue
+        try:
+            if link.resolve() != source.resolve():
+                result.warnings.append(f"Symlink target changed, skipping: {link}")
+                result.links_skipped += 1
+                continue
+        except OSError as exc:
+            result.warnings.append(f"Cannot read symlink {link}: {exc}")
+            result.links_skipped += 1
+            continue
+
+        if not dry_run:
+            link.unlink()
+        result.links_removed += 1
+        current.deployed_links = [
+            item for item in current.deployed_links if item.link != deployed.link
+        ]
+
+    if current.deployed_links:
+        result.mod = current
+        return result
+
+    result.mod = _cleanup_created_dirs(current, dry_run=dry_run)
+    return result
 
 
 def deploy_game(
@@ -117,11 +185,22 @@ def deploy_game(
     *,
     dry_run: bool = False,
 ) -> tuple[State, DeployOutcome]:
-    plan = build_link_plan(config, state, game_id)
     outcome = DeployOutcome(dry_run=dry_run)
     updated_mods: dict[tuple[str, str], ModRecord] = {
         (mod.game, mod.name): mod.model_copy(deep=True) for mod in state.mods
     }
+
+    for mod in state.mods:
+        if mod.game != game_id or mod.enabled or not mod.deployed_links:
+            continue
+        mod_key = (mod.game, mod.name)
+        removal = _remove_mod_links(updated_mods[mod_key], dry_run=dry_run)
+        updated_mods[mod_key] = removal.mod
+        outcome.links_removed += removal.links_removed
+        outcome.links_skipped += removal.links_skipped
+        outcome.warnings.extend(removal.warnings)
+
+    plan = build_link_plan(config, state, game_id)
 
     for entry in plan:
         mod_key = (entry.mod.game, entry.mod.name)
@@ -131,10 +210,13 @@ def deploy_game(
 
         if link.exists():
             if link.is_symlink() and link.resolve() == source.resolve():
-                if not _owned_link(link, source, mod):
-                    mod.deployed_links.append(DeployedLink(link=link, source=source))
-                outcome.links_skipped += 1
-                updated_mods[mod_key] = mod
+                if _owned_link(link, source, mod):
+                    outcome.links_skipped += 1
+                    updated_mods[mod_key] = mod
+                    continue
+                outcome.conflicts.append(
+                    f"Conflict at {link}: path exists and is not an lmm-owned symlink",
+                )
                 continue
             outcome.conflicts.append(
                 f"Conflict at {link}: path exists and is not an lmm-owned symlink",
@@ -184,57 +266,11 @@ def undeploy_game(
     for mod in state.mods:
         if mod.game != game_id:
             continue
-        current = updated_mods[(mod.game, mod.name)]
-        for deployed in list(current.deployed_links):
-            link = deployed.link
-            source = deployed.source
-            if not link.exists():
-                outcome.warnings.append(f"Missing link (already removed): {link}")
-                current.deployed_links = [
-                    item
-                    for item in current.deployed_links
-                    if item.link != deployed.link
-                ]
-                outcome.links_skipped += 1
-                continue
-            if not link.is_symlink():
-                outcome.warnings.append(f"Not a symlink, skipping: {link}")
-                outcome.links_skipped += 1
-                continue
-            try:
-                if link.resolve() != source.resolve():
-                    outcome.warnings.append(
-                        f"Symlink target changed, skipping: {link}",
-                    )
-                    outcome.links_skipped += 1
-                    continue
-            except OSError as exc:
-                outcome.warnings.append(f"Cannot read symlink {link}: {exc}")
-                outcome.links_skipped += 1
-                continue
-
-            if dry_run:
-                outcome.links_removed += 1
-            else:
-                link.unlink()
-                outcome.links_removed += 1
-            current.deployed_links = [
-                item for item in current.deployed_links if item.link != deployed.link
-            ]
-
-        if not dry_run:
-            for directory in sorted(
-                current.created_dirs, key=lambda p: len(p.parts), reverse=True
-            ):
-                if (
-                    directory.exists()
-                    and directory.is_dir()
-                    and not any(directory.iterdir())
-                ):
-                    directory.rmdir()
-            current.created_dirs = []
-
-        updated_mods[(mod.game, mod.name)] = current
+        removal = _remove_mod_links(updated_mods[(mod.game, mod.name)], dry_run=dry_run)
+        updated_mods[(mod.game, mod.name)] = removal.mod
+        outcome.links_removed += removal.links_removed
+        outcome.links_skipped += removal.links_skipped
+        outcome.warnings.extend(removal.warnings)
 
     if dry_run:
         return state, outcome

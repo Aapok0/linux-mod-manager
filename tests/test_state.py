@@ -57,7 +57,7 @@ def test_find_mod_ambiguous() -> None:
             ModRecord(name="foo", game="b", source_path=Path("/b")),
         ]
     )
-    with pytest.raises(KeyError, match="Ambiguous"):
+    with pytest.raises(StateError, match="Ambiguous"):
         find_mod(state, "foo")
 
 

@@ -454,10 +454,13 @@ def mod_deploy(
         console.print(
             f"{prefix}Deploy {game}: "
             f"{outcome.links_created} link(s) created, "
+            f"{outcome.links_removed} removed, "
             f"{outcome.links_skipped} skipped",
         )
         for conflict in outcome.conflicts:
             console.print(f"[yellow]Conflict:[/yellow] {conflict}")
+        for warning in outcome.warnings:
+            console.print(f"[yellow]Warning:[/yellow] {warning}")
 
     _handle_errors(run)
 
@@ -509,10 +512,9 @@ def mod_enable(
         app_ctx = _ctx(ctx)
         state_store = _state_store(app_ctx)
         state = state_store.load()
-        updated = set_mod_enabled(state, mod, enabled=True, default_game=game)
+        updated, record = set_mod_enabled(state, mod, enabled=True, default_game=game)
         state_store.save(updated)
-        resolved = mod if "/" in mod else f"{game}/{mod}" if game else mod
-        console.print(f"Enabled mod [bold]{resolved}[/bold]")
+        console.print(f"Enabled mod [bold]{record.game}/{record.name}[/bold]")
 
     _handle_errors(run)
 
@@ -532,10 +534,9 @@ def mod_disable(
         app_ctx = _ctx(ctx)
         state_store = _state_store(app_ctx)
         state = state_store.load()
-        updated = set_mod_enabled(state, mod, enabled=False, default_game=game)
+        updated, record = set_mod_enabled(state, mod, enabled=False, default_game=game)
         state_store.save(updated)
-        resolved = mod if "/" in mod else f"{game}/{mod}" if game else mod
-        console.print(f"Disabled mod [bold]{resolved}[/bold]")
+        console.print(f"Disabled mod [bold]{record.game}/{record.name}[/bold]")
 
     _handle_errors(run)
 
