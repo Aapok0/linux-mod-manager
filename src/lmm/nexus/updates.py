@@ -8,8 +8,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from lmm.config import Config
-from lmm.nexus.client import NexusClient
+from lmm.config import Config, ConfigError
+from lmm.nexus.client import NexusClient, NexusError
 from lmm.state import ModRecord, State
 
 
@@ -22,10 +22,22 @@ class IdentifyResult:
 
 
 @dataclass
+class IdentifyFailure:
+    mod_ref: str
+    error: str
+
+
+@dataclass
 class UpdateResult:
     mod_ref: str
     installed_version: str | None
     latest_version: str
+
+
+@dataclass
+class UpdateFailure:
+    mod_ref: str
+    error: str
 
 
 def _mod_ref(mod: ModRecord) -> str:
@@ -99,14 +111,15 @@ def identify_mods(
     game_id: str,
     *,
     client: NexusClient,
-) -> tuple[State, list[IdentifyResult]]:
+) -> tuple[State, list[IdentifyResult], list[IdentifyFailure]]:
     profile = config.games.get(game_id)
     if profile is None:
         msg = f"Unknown game profile: {game_id}"
-        raise ValueError(msg)
+        raise ConfigError(msg)
 
     updated = state.model_copy(deep=True)
     results: list[IdentifyResult] = []
+    failures: list[IdentifyFailure] = []
     for index, mod in enumerate(updated.mods):
         if mod.game != game_id or mod.nexus_mod_id is not None:
             continue
@@ -114,7 +127,11 @@ def identify_mods(
         if candidate is None:
             continue
         md5_hash = mod.file_md5 or _file_md5(candidate)
-        matches = client.md5_search(profile.nexus_domain, md5_hash)
+        try:
+            matches = client.md5_search(profile.nexus_domain, md5_hash)
+        except NexusError as exc:
+            failures.append(IdentifyFailure(mod_ref=_mod_ref(mod), error=str(exc)))
+            continue
         if not matches:
             continue
         chosen = matches[0]
@@ -140,7 +157,7 @@ def identify_mods(
                 installed_version=updated_mod.installed_version,
             )
         )
-    return updated, results
+    return updated, results, failures
 
 
 def _normalize_version(version: str) -> tuple[int, ...] | None:
@@ -200,17 +217,18 @@ def check_for_updates(
     client: NexusClient,
     period: str = "1w",
     stale_after: timedelta = timedelta(hours=24),
-) -> tuple[State, list[UpdateResult]]:
+) -> tuple[State, list[UpdateResult], list[UpdateFailure]]:
     profile = config.games.get(game_id)
     if profile is None:
         msg = f"Unknown game profile: {game_id}"
-        raise ValueError(msg)
+        raise ConfigError(msg)
 
     now = datetime.now(UTC)
     recent = client.updated_mods(profile.nexus_domain, period=period)
     updated_ids = _updated_mod_ids(recent)
     updated = state.model_copy(deep=True)
     changes: list[UpdateResult] = []
+    failures: list[UpdateFailure] = []
 
     for index, mod in enumerate(updated.mods):
         if mod.game != game_id or mod.nexus_mod_id is None:
@@ -218,7 +236,11 @@ def check_for_updates(
         stale = mod.last_checked is None or (now - mod.last_checked) >= stale_after
         if mod.nexus_mod_id not in updated_ids and not stale:
             continue
-        files = client.mod_files(profile.nexus_domain, mod.nexus_mod_id)
+        try:
+            files = client.mod_files(profile.nexus_domain, mod.nexus_mod_id)
+        except NexusError as exc:
+            failures.append(UpdateFailure(mod_ref=_mod_ref(mod), error=str(exc)))
+            continue
         file_id, latest = _latest_file_version(files)
         has_update = is_newer_version(mod.installed_version, latest)
         updated_mod = mod.model_copy(
@@ -238,4 +260,4 @@ def check_for_updates(
                     latest_version=latest,
                 )
             )
-    return updated, changes
+    return updated, changes, failures

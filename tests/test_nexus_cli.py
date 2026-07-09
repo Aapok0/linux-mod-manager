@@ -18,6 +18,7 @@ class FakeNexusClient:
         if not api_key:
             msg = "Nexus API key missing. Set NEXUS_API_KEY or config.nexus_api_key."
             raise NexusError(msg)
+        self._md5_calls = 0
 
     def __enter__(self) -> FakeNexusClient:
         return self
@@ -29,6 +30,10 @@ class FakeNexusClient:
         return {"name": "tester"}
 
     def md5_search(self, _: str, __: str) -> list[dict[str, Any]]:
+        self._md5_calls += 1
+        if self._md5_calls == 1:
+            msg = "md5_search failed for first mod"
+            raise NexusError(msg)
         return [{"mod_id": 99, "file_id": 5, "version": "1.0.0"}]
 
     def updated_mods(self, _: str, *, period: str = "1w") -> list[dict[str, int]]:
@@ -36,6 +41,11 @@ class FakeNexusClient:
 
     def mod_files(self, _: str, __: int) -> list[dict[str, Any]]:
         return [{"file_id": 5, "version": "1.1.0", "category_name": "MAIN"}]
+
+
+class HappyNexusClient(FakeNexusClient):
+    def md5_search(self, _: str, __: str) -> list[dict[str, Any]]:
+        return [{"mod_id": 99, "file_id": 5, "version": "1.0.0"}]
 
 
 def test_identify_and_check_commands(
@@ -46,7 +56,7 @@ def test_identify_and_check_commands(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("NEXUS_API_KEY", "secret")
-    monkeypatch.setattr("lmm.cli.NexusClient", FakeNexusClient)
+    monkeypatch.setattr("lmm.cli.NexusClient", HappyNexusClient)
 
     source = data_dir / "incoming" / "moda"
     source.mkdir(parents=True)
@@ -82,3 +92,42 @@ def test_identify_requires_key(
     identify = runner.invoke(app, [*cli_args, "identify", "kcd2"])
     assert identify.exit_code == 1
     assert "Nexus API key missing" in identify.output
+
+
+def test_identify_unknown_game_reports_error(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEXUS_API_KEY", "secret")
+    monkeypatch.setattr("lmm.cli.NexusClient", HappyNexusClient)
+
+    identify = runner.invoke(app, [*cli_args, "identify", "bogus"])
+    assert identify.exit_code == 1
+    assert "Unknown game profile: bogus" in identify.output
+
+
+def test_identify_continues_after_per_mod_failure(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+    data_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NEXUS_API_KEY", "secret")
+    monkeypatch.setattr("lmm.cli.NexusClient", FakeNexusClient)
+
+    for name in ("moda", "modb"):
+        source = data_dir / "incoming" / name
+        source.mkdir(parents=True)
+        (source / "file.txt").write_text(name, encoding="utf-8")
+        runner.invoke(app, [*cli_args, "add", str(source), "--game", "kcd2"])
+
+    identify = runner.invoke(app, [*cli_args, "identify", "kcd2"])
+    assert identify.exit_code == 0, identify.output
+    assert "md5_search failed" in identify.output
+
+    state = StateStore(data_dir / "state.json").load()
+    assert state.mods[0].nexus_mod_id is None
+    assert state.mods[1].nexus_mod_id == 99

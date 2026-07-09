@@ -562,25 +562,34 @@ def mod_identify(
         state_store = _state_store(app_ctx)
         config = config_store.load()
         state = state_store.load()
-        with NexusClient(api_key=config_store.resolve_api_key(config)) as client:
+        with _nexus_client(app_ctx, config_store) as client:
             client.validate_key()
-            updated, identified = identify_mods(config, state, game, client=client)
+            updated, identified, failures = identify_mods(
+                config, state, game, client=client
+            )
         state_store.save(updated)
         if app_ctx.as_json:
-            payload = [
-                {
-                    "mod": item.mod_ref,
-                    "nexus_mod_id": item.nexus_mod_id,
-                    "file_id": item.file_id,
-                    "installed_version": item.installed_version,
-                }
-                for item in identified
-            ]
+            payload = {
+                "identified": [
+                    {
+                        "mod": item.mod_ref,
+                        "nexus_mod_id": item.nexus_mod_id,
+                        "file_id": item.file_id,
+                        "installed_version": item.installed_version,
+                    }
+                    for item in identified
+                ],
+                "failures": [
+                    {"mod": item.mod_ref, "error": item.error} for item in failures
+                ],
+            }
             typer.echo(json.dumps(payload, indent=2))
             return
         console.print(
             f"Identify {game}: {len(identified)} mod(s) matched in Nexus",
         )
+        for item in failures:
+            typer.echo(f"  {item.mod_ref}: {item.error}", err=True)
 
     _handle_errors(run)
 
@@ -598,35 +607,45 @@ def mod_check(
         state_store = _state_store(app_ctx)
         config = config_store.load()
         state = state_store.load()
-        with NexusClient(api_key=config_store.resolve_api_key(config)) as client:
+        with _nexus_client(app_ctx, config_store) as client:
             client.validate_key()
-            updated, updates = check_for_updates(config, state, game, client=client)
+            updated, updates, failures = check_for_updates(
+                config, state, game, client=client
+            )
         state_store.save(updated)
         if app_ctx.as_json:
-            payload = [
-                {
-                    "mod": item.mod_ref,
-                    "installed_version": item.installed_version,
-                    "latest_version": item.latest_version,
-                }
-                for item in updates
-            ]
+            payload = {
+                "updates": [
+                    {
+                        "mod": item.mod_ref,
+                        "installed_version": item.installed_version,
+                        "latest_version": item.latest_version,
+                    }
+                    for item in updates
+                ],
+                "failures": [
+                    {"mod": item.mod_ref, "error": item.error} for item in failures
+                ],
+            }
             typer.echo(json.dumps(payload, indent=2))
             return
-        if not updates:
+        if not updates and not failures:
             console.print(f"Check {game}: no updates found.")
             return
-        table = Table(title=f"Updates for {game}")
-        table.add_column("Mod")
-        table.add_column("Installed")
-        table.add_column("Latest")
-        for item in updates:
-            table.add_row(
-                item.mod_ref,
-                item.installed_version or "",
-                item.latest_version,
-            )
-        console.print(table)
+        if updates:
+            table = Table(title=f"Updates for {game}")
+            table.add_column("Mod")
+            table.add_column("Installed")
+            table.add_column("Latest")
+            for item in updates:
+                table.add_row(
+                    item.mod_ref,
+                    item.installed_version or "",
+                    item.latest_version,
+                )
+            console.print(table)
+        for item in failures:
+            typer.echo(f"  {item.mod_ref}: {item.error}", err=True)
 
     _handle_errors(run)
 

@@ -178,8 +178,7 @@ class NexusClient:
                 continue
             if response.status_code >= 400:
                 msg = (
-                    f"Nexus request failed with HTTP {response.status_code}: "
-                    f"{endpoint}"
+                    f"Nexus request failed with HTTP {response.status_code}: {endpoint}"
                 )
                 raise NexusError(msg)
 
