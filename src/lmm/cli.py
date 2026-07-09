@@ -28,6 +28,8 @@ from lmm.library import (
     mod_is_deployed,
     resolve_mod_source,
 )
+from lmm.nexus import NexusClient, NexusError
+from lmm.nexus.updates import check_for_updates, identify_mods
 from lmm.state import (
     StateError,
     StateStore,
@@ -78,9 +80,15 @@ def _state_store(ctx: AppContext) -> StateStore:
 def _handle_errors(fn: Callable[[], T]) -> T:
     try:
         return fn()
-    except (ConfigError, DeployError, LibraryError, StateError) as exc:
+    except (ConfigError, DeployError, LibraryError, NexusError, StateError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
+
+
+def _nexus_client(app_ctx: AppContext, config_store: ConfigStore) -> NexusClient:
+    config = config_store.load()
+    api_key = config_store.resolve_api_key(config)
+    return NexusClient(api_key=api_key)
 
 
 @app.callback()
@@ -537,6 +545,88 @@ def mod_disable(
         updated, record = set_mod_enabled(state, mod, enabled=False, default_game=game)
         state_store.save(updated)
         console.print(f"Disabled mod [bold]{record.game}/{record.name}[/bold]")
+
+    _handle_errors(run)
+
+
+@app.command("identify")
+def mod_identify(
+    ctx: typer.Context,
+    game: Annotated[str, typer.Argument(help="Game profile id")],
+) -> None:
+    """Identify Nexus metadata for mods in a game via md5 search."""
+
+    def run() -> None:
+        app_ctx = _ctx(ctx)
+        config_store = _config_store(app_ctx)
+        state_store = _state_store(app_ctx)
+        config = config_store.load()
+        state = state_store.load()
+        with NexusClient(api_key=config_store.resolve_api_key(config)) as client:
+            client.validate_key()
+            updated, identified = identify_mods(config, state, game, client=client)
+        state_store.save(updated)
+        if app_ctx.as_json:
+            payload = [
+                {
+                    "mod": item.mod_ref,
+                    "nexus_mod_id": item.nexus_mod_id,
+                    "file_id": item.file_id,
+                    "installed_version": item.installed_version,
+                }
+                for item in identified
+            ]
+            typer.echo(json.dumps(payload, indent=2))
+            return
+        console.print(
+            f"Identify {game}: {len(identified)} mod(s) matched in Nexus",
+        )
+
+    _handle_errors(run)
+
+
+@app.command("check")
+def mod_check(
+    ctx: typer.Context,
+    game: Annotated[str, typer.Argument(help="Game profile id")],
+) -> None:
+    """Check installed mods against Nexus latest versions."""
+
+    def run() -> None:
+        app_ctx = _ctx(ctx)
+        config_store = _config_store(app_ctx)
+        state_store = _state_store(app_ctx)
+        config = config_store.load()
+        state = state_store.load()
+        with NexusClient(api_key=config_store.resolve_api_key(config)) as client:
+            client.validate_key()
+            updated, updates = check_for_updates(config, state, game, client=client)
+        state_store.save(updated)
+        if app_ctx.as_json:
+            payload = [
+                {
+                    "mod": item.mod_ref,
+                    "installed_version": item.installed_version,
+                    "latest_version": item.latest_version,
+                }
+                for item in updates
+            ]
+            typer.echo(json.dumps(payload, indent=2))
+            return
+        if not updates:
+            console.print(f"Check {game}: no updates found.")
+            return
+        table = Table(title=f"Updates for {game}")
+        table.add_column("Mod")
+        table.add_column("Installed")
+        table.add_column("Latest")
+        for item in updates:
+            table.add_row(
+                item.mod_ref,
+                item.installed_version or "",
+                item.latest_version,
+            )
+        console.print(table)
 
     _handle_errors(run)
 

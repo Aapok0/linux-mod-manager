@@ -68,10 +68,10 @@ Acceptance:
 
 Scope: version checking and identification (check-only).
 
-- [ ] `nexus/client.py`: v1 client, `apikey` header, retry/backoff, rate-limit accounting, disk cache.
-- [ ] Key validation via `users/validate.json`.
-- [ ] `nexus/updates.py`: version compare; `identify` via `md5_search`.
-- [ ] CLI: `check`, `identify`.
+- [x] `nexus/client.py`: v1 client, `apikey` header, retry/backoff, rate-limit accounting, disk cache.
+- [x] Key validation via `users/validate.json`.
+- [x] `nexus/updates.py`: version compare; `identify` via `md5_search`.
+- [x] CLI: `check`, `identify`.
 
 Acceptance:
 - Invalid/missing key yields a clear error; valid key validates.
