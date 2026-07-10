@@ -55,6 +55,24 @@ def test_api_key_falls_back_to_file(
     assert store.resolve_api_key(config) == "file-key"
 
 
+def test_library_root_prefers_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = ConfigStore(tmp_path / "config.toml")
+    store.save(Config(library_root=tmp_path / "from-file"))
+    monkeypatch.setenv("LMM_LIBRARY_ROOT", str(tmp_path / "from-env"))
+    loaded = store.load()
+    assert loaded.library_root == tmp_path / "from-env"
+    assert store.resolve_library_root(loaded) == tmp_path / "from-env"
+
+
+def test_library_root_env_applied_when_config_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = ConfigStore(tmp_path / "config.toml")
+    monkeypatch.setenv("LMM_LIBRARY_ROOT", str(tmp_path / "mods"))
+    loaded = store.load()
+    assert loaded.library_root == tmp_path / "mods"
+
+
 def test_add_game_profile_rejects_duplicate() -> None:
     config = Config(
         games={

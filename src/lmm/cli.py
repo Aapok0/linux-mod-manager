@@ -28,6 +28,7 @@ from lmm.library import (
     mod_is_deployed,
     resolve_mod_source,
 )
+from lmm.logging_config import setup_logging
 from lmm.nexus import NexusClient, NexusError
 from lmm.nexus.updates import check_for_updates, identify_mods
 from lmm.state import (
@@ -59,6 +60,7 @@ class AppContext:
     state_path: Path | None
     as_json: bool
     dry_run: bool
+    verbose: bool
 
 
 def _ctx(ctx: typer.Context) -> AppContext:
@@ -110,6 +112,10 @@ def app_callback(
         bool,
         typer.Option("--dry-run", help="Print actions without making changes"),
     ] = False,
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-v", help="Enable debug logging"),
+    ] = False,
     version: Annotated[
         bool,
         typer.Option("--version", help="Show version and exit"),
@@ -118,11 +124,13 @@ def app_callback(
     if version:
         typer.echo(__version__)
         raise typer.Exit()
+    setup_logging(verbose=verbose)
     ctx.obj = AppContext(
         config_path=config,
         state_path=state,
         as_json=as_json,
         dry_run=dry_run,
+        verbose=verbose,
     )
 
 
@@ -421,14 +429,19 @@ def mod_list(
         table.add_column("Game")
         table.add_column("Name")
         table.add_column("Version")
+        table.add_column("Latest")
+        table.add_column("Update")
         table.add_column("Enabled")
         table.add_column("Deployed")
         table.add_column("Source")
         for mod in mods:
+            update_cell = "[yellow]yes[/yellow]" if mod.update_available else "no"
             table.add_row(
                 mod.game,
                 mod.name,
                 mod.installed_version or "",
+                mod.latest_version or "",
+                update_cell,
                 "yes" if mod.enabled else "no",
                 "yes" if mod_is_deployed(mod) else "no",
                 str(mod.source_path),
@@ -458,6 +471,18 @@ def mod_deploy(
         )
         if not app_ctx.dry_run:
             state_store.save(updated_state)
+        if app_ctx.as_json:
+            payload = {
+                "game": game,
+                "dry_run": app_ctx.dry_run,
+                "links_created": outcome.links_created,
+                "links_removed": outcome.links_removed,
+                "links_skipped": outcome.links_skipped,
+                "conflicts": outcome.conflicts,
+                "warnings": outcome.warnings,
+            }
+            typer.echo(json.dumps(payload, indent=2))
+            return
         prefix = "[dry-run] " if app_ctx.dry_run else ""
         console.print(
             f"{prefix}Deploy {game}: "
@@ -493,6 +518,16 @@ def mod_undeploy(
         )
         if not app_ctx.dry_run:
             state_store.save(updated_state)
+        if app_ctx.as_json:
+            payload = {
+                "game": game,
+                "dry_run": app_ctx.dry_run,
+                "links_removed": outcome.links_removed,
+                "links_skipped": outcome.links_skipped,
+                "warnings": outcome.warnings,
+            }
+            typer.echo(json.dumps(payload, indent=2))
+            return
         prefix = "[dry-run] " if app_ctx.dry_run else ""
         console.print(
             f"{prefix}Undeploy {game}: "
@@ -522,6 +557,17 @@ def mod_enable(
         state = state_store.load()
         updated, record = set_mod_enabled(state, mod, enabled=True, default_game=game)
         state_store.save(updated)
+        if app_ctx.as_json:
+            typer.echo(
+                json.dumps(
+                    {
+                        "mod": f"{record.game}/{record.name}",
+                        "enabled": record.enabled,
+                    },
+                    indent=2,
+                )
+            )
+            return
         console.print(f"Enabled mod [bold]{record.game}/{record.name}[/bold]")
 
     _handle_errors(run)
@@ -544,6 +590,17 @@ def mod_disable(
         state = state_store.load()
         updated, record = set_mod_enabled(state, mod, enabled=False, default_game=game)
         state_store.save(updated)
+        if app_ctx.as_json:
+            typer.echo(
+                json.dumps(
+                    {
+                        "mod": f"{record.game}/{record.name}",
+                        "enabled": record.enabled,
+                    },
+                    indent=2,
+                )
+            )
+            return
         console.print(f"Disabled mod [bold]{record.game}/{record.name}[/bold]")
 
     _handle_errors(run)

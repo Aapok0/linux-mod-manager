@@ -120,3 +120,14 @@ def test_cli_dry_run_deploy(
     assert not (game_target / "a.txt").exists()
     state = StateStore(data_dir / "state.json").load()
     assert len(state.mods[0].deployed_links) == 0
+
+
+def test_cli_deploy_json_output(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_with_mod_minimal: Path,
+) -> None:
+    result = runner.invoke(app, [*cli_args, "--json", "deploy", "kcd2"])
+    assert result.exit_code == 0, result.output
+    assert '"links_created": 1' in result.output
+    assert '"game": "kcd2"' in result.output

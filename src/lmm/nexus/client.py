@@ -14,6 +14,15 @@ import httpx
 
 from lmm import __version__
 from lmm.io import atomic_write
+from lmm.logging_config import get_logger
+
+logger = get_logger("nexus")
+
+# Per-endpoint cache TTLs (seconds). See nexus-api.md.
+CACHE_TTL_DEFAULT = 3600
+CACHE_TTL_UPDATED_MODS = 600
+CACHE_TTL_MOD_FILES = 900
+CACHE_TTL_MD5_SEARCH = 86400
 
 
 class NexusError(Exception):
@@ -44,7 +53,7 @@ class NexusClient:
         user_agent: str | None = None,
         base_url: str = "https://api.nexusmods.com",
         cache_path: Path | None = None,
-        cache_ttl_seconds: int = 3600,
+        cache_ttl_seconds: int = CACHE_TTL_DEFAULT,
         timeout_seconds: float = 20.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
@@ -109,6 +118,7 @@ class NexusClient:
         if expires_at <= time.time():
             self._cache.pop(key, None)
             return None
+        logger.debug("Cache hit for %s", endpoint)
         return entry.get("value")
 
     def _write_cached(
@@ -152,6 +162,7 @@ class NexusClient:
 
         for attempt in range(retries):
             try:
+                logger.debug("GET %s (attempt %d)", endpoint, attempt + 1)
                 response = self._client.get(endpoint, params=params)
             except httpx.HTTPError as exc:
                 if attempt == retries - 1:
@@ -208,7 +219,7 @@ class NexusClient:
         data = self.get_json(
             f"/v1/games/{game_domain}/mods/updated.json",
             params={"period": period},
-            ttl_seconds=600,
+            ttl_seconds=CACHE_TTL_UPDATED_MODS,
         )
         if isinstance(data, list):
             return [item for item in data if isinstance(item, dict)]
@@ -217,7 +228,7 @@ class NexusClient:
     def mod_files(self, game_domain: str, mod_id: int) -> list[dict[str, Any]]:
         data = self.get_json(
             f"/v1/games/{game_domain}/mods/{mod_id}/files.json",
-            ttl_seconds=900,
+            ttl_seconds=CACHE_TTL_MOD_FILES,
         )
         if isinstance(data, dict):
             files = data.get("files")
@@ -230,7 +241,7 @@ class NexusClient:
     def md5_search(self, game_domain: str, md5_hash: str) -> list[dict[str, Any]]:
         data = self.get_json(
             f"/v1/games/{game_domain}/mods/md5_search/{md5_hash}.json",
-            ttl_seconds=86400,
+            ttl_seconds=CACHE_TTL_MD5_SEARCH,
         )
         if isinstance(data, list):
             return [item for item in data if isinstance(item, dict)]

@@ -51,6 +51,7 @@ class ModRecord(BaseModel):
     last_checked: datetime | None = None
     update_available: bool = False
     latest_version: str | None = None
+    notes: str | None = None
 
     @field_validator("source_path", mode="before")
     @classmethod

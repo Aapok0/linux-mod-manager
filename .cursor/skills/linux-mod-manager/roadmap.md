@@ -83,9 +83,9 @@ Acceptance:
 
 Scope: usability and groundwork for later features.
 
-- [ ] Caching TTLs, `rich` tables/status, structured `--json` output, logging with key masking.
-- [ ] State migrations exercised by at least one version bump.
-- [ ] README with install + quickstart.
+- [x] Caching TTLs, `rich` tables/status, structured `--json` output, logging with key masking.
+- [x] State migration scaffold in place (no version bump until a real breaking change).
+- [x] README with install + quickstart.
 
 Deferred (design kept open, not implemented now):
 - `nxm://` URL handler integration.

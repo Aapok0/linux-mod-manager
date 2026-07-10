@@ -49,7 +49,7 @@ flowchart LR
 
 ## CLI surface
 
-Global options: `--config PATH`, `--dry-run`, `--json`.
+Global options: `--config PATH`, `--dry-run`, `--json`, `--verbose`.
 
 | Command | Purpose |
 |---------|---------|
@@ -83,6 +83,7 @@ Conventions: a mod is referenced by its `name` (unique within a game) or `game/n
 - `undeploy` must only remove links present in `deployed_links`; never delete real game files.
 - Detect conflicts before linking: if a target path exists and is not an lmm-owned symlink, abort that link and report it.
 - Nexus API key comes from `NEXUS_API_KEY` env or `config.toml`; never log or commit it.
+- `library_root` comes from `LMM_LIBRARY_ROOT` env or `config.toml`; set before first `game add` if not using the default.
 - Cache Nexus responses and stay within rate limits (see [nexus-api.md](nexus-api.md)).
 
 ## Tooling & conventions

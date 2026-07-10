@@ -75,19 +75,33 @@ class ConfigStore:
 
     def load(self) -> Config:
         if not self.path.exists():
-            return Config()
-        try:
-            raw = tomllib.loads(self.path.read_text(encoding="utf-8"))
-            return Config.model_validate(raw)
-        except OSError as exc:
-            msg = f"Cannot read config at {self.path}: {exc}"
-            raise ConfigError(msg) from exc
-        except tomllib.TOMLDecodeError as exc:
-            msg = f"Invalid TOML in config at {self.path}: {exc}"
-            raise ConfigError(msg) from exc
-        except ValidationError as exc:
-            msg = f"Invalid config at {self.path}: {exc}"
-            raise ConfigError(msg) from exc
+            config = Config()
+        else:
+            try:
+                raw = tomllib.loads(self.path.read_text(encoding="utf-8"))
+                config = Config.model_validate(raw)
+            except OSError as exc:
+                msg = f"Cannot read config at {self.path}: {exc}"
+                raise ConfigError(msg) from exc
+            except tomllib.TOMLDecodeError as exc:
+                msg = f"Invalid TOML in config at {self.path}: {exc}"
+                raise ConfigError(msg) from exc
+            except ValidationError as exc:
+                msg = f"Invalid config at {self.path}: {exc}"
+                raise ConfigError(msg) from exc
+        return self._apply_env_overrides(config)
+
+    def _apply_env_overrides(self, config: Config) -> Config:
+        env_root = os.environ.get("LMM_LIBRARY_ROOT", "").strip()
+        if env_root:
+            return config.model_copy(update={"library_root": Path(env_root)})
+        return config
+
+    def resolve_library_root(self, config: Config) -> Path:
+        env_root = os.environ.get("LMM_LIBRARY_ROOT", "").strip()
+        if env_root:
+            return Path(env_root)
+        return config.library_root
 
     def save(self, config: Config) -> None:
         payload = config.model_dump(mode="python")

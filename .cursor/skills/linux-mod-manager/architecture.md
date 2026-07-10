@@ -43,6 +43,7 @@ deploy_method = "symlink"
 
 Notes:
 - Resolution order for the API key: `NEXUS_API_KEY` env var, then `nexus_api_key` in config. Never log it.
+- Resolution order for `library_root`: `LMM_LIBRARY_ROOT` env var, then `library_root` in config, then `$XDG_DATA_HOME/lmm/mods`.
 - **`targets[0]` is the default deploy directory** for the game. Set on `game add`; add more later with `game target add`. Most mods deploy to `targets[0]` without any per-mod setting.
 - Additional `targets` entries (index 1, 2, …) exist for the few mods that need a different game directory. Override via `ModRecord.target`.
 - **`library_subpath`** is the default library directory for the game's mods under `library_root`.
@@ -71,7 +72,8 @@ Notes:
       "created_dirs": [],
       "last_checked": null,
       "update_available": false,
-      "latest_version": null
+      "latest_version": null,
+      "notes": null
     }
   ]
 }
@@ -84,8 +86,9 @@ Field semantics:
 - `nexus_mod_id` / `file_id` / `installed_version` / `file_md5`: filled by `add --mod-id` or `identify`.
 - `deployed_links`: list of `{link, source}` absolute-path pairs lmm created. Authoritative for `undeploy`.
 - `last_checked`, `update_available`, `latest_version`: populated by `check`.
+- `notes`: optional user notes.
 
-Migrations: read `schema_version`; if older, run ordered migration functions and rewrite. Adding optional fields is non-breaking and does not require a bump.
+Migrations: read `schema_version`; if older, run ordered migration functions and rewrite. Adding optional fields is non-breaking and does not require a bump. The migration scaffold (`MIGRATIONS`, `migrate_state`) is in place; bump `schema_version` only when a breaking change requires it.
 
 ## Symlink deploy engine (`deploy.py`)
 
