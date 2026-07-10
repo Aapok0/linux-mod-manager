@@ -12,6 +12,20 @@ from lmm.config import Config, ConfigError
 from lmm.nexus.client import NexusClient, NexusError
 from lmm.state import ModRecord, State
 
+ARCHIVE_SUFFIXES = frozenset({".zip", ".7z", ".rar", ".pak", ".ba2", ".mpmod"})
+
+
+@dataclass
+class IdentifyPlanItem:
+    mod_ref: str
+    source_file: Path | None
+
+
+@dataclass
+class CheckPlanItem:
+    mod_ref: str
+    reason: str
+
 
 @dataclass
 class IdentifyResult:
@@ -64,7 +78,48 @@ def _pick_primary_file(mod_source: Path) -> Path | None:
     files = [path for path in mod_source.rglob("*") if path.is_file()]
     if not files:
         return None
-    return max(files, key=lambda item: item.stat().st_size)
+    archives = [path for path in files if path.suffix.lower() in ARCHIVE_SUFFIXES]
+    candidates = archives if archives else files
+    return max(candidates, key=lambda item: item.stat().st_size)
+
+
+def _entry_file_size(entry: dict[str, Any]) -> int | None:
+    file_section = entry.get("file_details")
+    if isinstance(file_section, dict):
+        size = _extract_int(file_section, "size", "file_size")
+        if size is not None:
+            return size
+    return _extract_int(entry, "size", "file_size")
+
+
+def _is_main_category(entry: dict[str, Any]) -> bool:
+    category = _extract_str(entry, "category_name", "category")
+    if category and category.upper() == "MAIN":
+        return True
+    file_section = entry.get("file_details")
+    if isinstance(file_section, dict):
+        nested = _extract_str(file_section, "category_name", "category")
+        return bool(nested and nested.upper() == "MAIN")
+    return False
+
+
+def _pick_md5_match(matches: list[dict[str, Any]], local_size: int) -> dict[str, Any]:
+    if not matches:
+        msg = "matches must not be empty"
+        raise ValueError(msg)
+    sized = [(entry, _entry_file_size(entry)) for entry in matches]
+    if all(size is None for _, size in sized):
+        return matches[0]
+    exact = [entry for entry, size in sized if size == local_size]
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        main_matches = [entry for entry in exact if _is_main_category(entry)]
+        if len(main_matches) == 1:
+            return main_matches[0]
+        return exact[0]
+    with_size = [(entry, size) for entry, size in sized if size is not None]
+    return min(with_size, key=lambda item: abs(item[1] - local_size))[0]
 
 
 def _file_md5(path: Path) -> str:
@@ -134,7 +189,7 @@ def identify_mods(
             continue
         if not matches:
             continue
-        chosen = matches[0]
+        chosen = _pick_md5_match(matches, candidate.stat().st_size)
         nexus_mod_id = _entry_mod_id(chosen)
         if nexus_mod_id is None:
             continue
@@ -158,6 +213,46 @@ def identify_mods(
             )
         )
     return updated, results, failures
+
+
+def plan_identify(
+    config: Config,
+    state: State,
+    game_id: str,
+) -> list[IdentifyPlanItem]:
+    profile = config.games.get(game_id)
+    if profile is None:
+        msg = f"Unknown game profile: {game_id}"
+        raise ConfigError(msg)
+    planned: list[IdentifyPlanItem] = []
+    for mod in state.mods:
+        if mod.game != game_id or mod.nexus_mod_id is not None:
+            continue
+        candidate = _pick_primary_file(mod.source_path.resolve())
+        planned.append(IdentifyPlanItem(mod_ref=_mod_ref(mod), source_file=candidate))
+    return planned
+
+
+def plan_check(
+    config: Config,
+    state: State,
+    game_id: str,
+    *,
+    stale_after: timedelta = timedelta(hours=24),
+) -> list[CheckPlanItem]:
+    profile = config.games.get(game_id)
+    if profile is None:
+        msg = f"Unknown game profile: {game_id}"
+        raise ConfigError(msg)
+    now = datetime.now(UTC)
+    planned: list[CheckPlanItem] = []
+    for mod in state.mods:
+        if mod.game != game_id or mod.nexus_mod_id is None:
+            continue
+        stale = mod.last_checked is None or (now - mod.last_checked) >= stale_after
+        if stale:
+            planned.append(CheckPlanItem(mod_ref=_mod_ref(mod), reason="stale"))
+    return planned
 
 
 def _normalize_version(version: str) -> tuple[int, ...] | None:

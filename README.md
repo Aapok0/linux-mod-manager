@@ -6,12 +6,20 @@ Manage mods in a local library, deploy them into game directories via recorded s
 
 ## Install
 
+From a local copy of this repository:
+
 ```bash
-git clone https://github.com/your-org/linux-mod-manager.git
 cd linux-mod-manager
 python -m venv .venv
 source .venv/bin/activate
+pip install -e .
+```
+
+Or install runtime dependencies from the lockfile:
+
+```bash
 pip install -r requirements.txt
+pip install -e .
 ```
 
 Development (editable install + test tools):
@@ -41,7 +49,7 @@ export LMM_LIBRARY_ROOT="/home/user/Games/lmm/Mods"
 | `NEXUS_API_KEY` | for `identify`/`check` | — | Nexus API key (overrides `nexus_api_key` in config) |
 | `LMM_LIBRARY_ROOT` | no | `$XDG_DATA_HOME/lmm/mods` | Mod storage root (overrides `library_root` in config) |
 
-Alternatively, create `~/.config/lmm/config.toml` manually with `library_root` and `nexus_api_key` before running any commands. The first `game add` writes config to disk; any env overrides active at that moment are persisted.
+Alternatively, create `~/.config/lmm/config.toml` manually with `library_root` and `nexus_api_key` before running any commands. The first `game add` writes config to disk; any env overrides active at that moment are persisted into `config.toml`. Unsetting `LMM_LIBRARY_ROOT` later does not change the saved path — edit config or set the env var again.
 
 See [Configuration](#configuration) for all options.
 

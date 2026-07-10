@@ -94,6 +94,6 @@ Deferred (design kept open, not implemented now):
 - Proton/Wine prefix-aware targets.
 - Per-mod, per-subpath routing rules.
 
-## Definition of done (MVP = P1-P3)
+## Definition of done (MVP = P1–P4, v0.2.0)
 
-A user can register games, import mods, deploy/undeploy them safely via recorded symlinks, and run `lmm check` to learn which installed mods have newer versions on Nexus, all driven by `config.toml` and `state.json`.
+A user can register games, import mods, deploy/undeploy them safely via recorded symlinks, and run `lmm check` to learn which installed mods have newer versions on Nexus, with polished CLI output, docs, and configuration — all driven by `config.toml` and `state.json`.

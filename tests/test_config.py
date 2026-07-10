@@ -55,7 +55,9 @@ def test_api_key_falls_back_to_file(
     assert store.resolve_api_key(config) == "file-key"
 
 
-def test_library_root_prefers_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_library_root_prefers_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = ConfigStore(tmp_path / "config.toml")
     store.save(Config(library_root=tmp_path / "from-file"))
     monkeypatch.setenv("LMM_LIBRARY_ROOT", str(tmp_path / "from-env"))

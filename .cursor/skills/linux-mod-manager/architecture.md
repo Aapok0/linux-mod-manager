@@ -146,5 +146,5 @@ Most games: one default deploy dir (`targets[0]`) and one library subpath. Obliv
 
 - Fail loudly on: missing game profile, unreadable library root, foreign-file conflicts, path escape attempts.
 - Config/state load failures surface as `ConfigError` / `StateError` with actionable messages.
-- Degrade gracefully on: missing/changed links during undeploy, Nexus network/rate-limit errors during `check`/`identify` (report and continue).
-- All filesystem mutations honor `--dry-run`.
+- Degrade gracefully on: missing/changed links during undeploy, Nexus network/rate-limit errors during `check`/`identify` (report and continue; exit 1 if any per-mod failures occurred).
+- `--dry-run` skips filesystem mutations, Nexus API calls, and state writes (including `identify`/`check` plan-only output).
