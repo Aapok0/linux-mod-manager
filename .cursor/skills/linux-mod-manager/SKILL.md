@@ -63,10 +63,10 @@ Global options: `--config PATH`, `--dry-run`, `--json`, `--verbose`.
 | `lmm enable <mod>` / `lmm disable <mod>` | Toggle whether a mod deploys (run `deploy` afterward to apply) |
 | `lmm deploy <game>` | Reconcile game dir: remove disabled mods' links, symlink enabled mods |
 | `lmm undeploy <game>` | Remove only the symlinks recorded in state |
-| `lmm identify [game]` | md5_search local files -> Nexus mod_id/version, fill state |
-| `lmm check [game]` | Compare installed version vs Nexus latest; report updates (no download) |
+| `lmm identify <game>` | md5_search local files -> Nexus mod_id/version, fill state |
+| `lmm check <game>` | Compare installed version vs Nexus latest; report updates (no download) |
 
-Conventions: a mod is referenced by its `name` (unique within a game) or `game/name`. `deploy`/`undeploy` are idempotent and conflict-safe. `--dry-run` prints actions without touching the filesystem or network writes.
+Conventions: a mod is referenced by its `name` (unique within a game) or `game/name`. `deploy`/`undeploy` are idempotent and conflict-safe. `--dry-run` prints planned actions without filesystem, network, or state writes (including `identify`/`check`). Partial Nexus failures exit 1 after saving successful mods.
 
 ## Tech stack
 

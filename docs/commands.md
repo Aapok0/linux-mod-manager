@@ -11,7 +11,7 @@ These apply to every subcommand:
 | `--config PATH` | `~/.config/lmm/config.toml` | Path to `config.toml` |
 | `--state PATH` | `~/.local/share/lmm/state.json` | Path to `state.json` |
 | `--json` | off | Emit machine-readable JSON instead of tables |
-| `--dry-run` | off | Print planned actions without writing files or state |
+| `--dry-run` | off | Print planned actions without filesystem, network, or state writes |
 | `--verbose`, `-v` | off | Enable debug logging (API keys are masked) |
 | `--version` | — | Print version and exit |
 
@@ -135,13 +135,17 @@ Requires a valid Nexus API key. No files are downloaded.
 
 For mods missing `nexus_mod_id`, hash the primary file and search Nexus via `md5_search`. Fills `nexus_mod_id`, `file_id`, `installed_version`, and `file_md5` in state.
 
-Per-mod API failures are reported and skipped; other mods continue.
+Per-mod API failures are reported and skipped; other mods continue. Exits **1** if any failures occurred (successful mods are still saved).
+
+`--dry-run` lists mods that would be identified and their primary files locally; no API calls or state writes.
 
 ### `lmm check <game>`
 
 Compare installed versions against Nexus latest. Uses `mods/updated` pre-filter and cached responses to stay within rate limits.
 
-Updates `update_available`, `latest_version`, and `last_checked` in state. Reports mods with newer versions available.
+Updates `update_available`, `latest_version`, and `last_checked` in state. Reports mods with newer versions available. Exits **1** if any per-mod API failures occurred (other mods still updated in state).
+
+`--dry-run` lists stale mods that would be checked. Live runs also check mods appearing in Nexus `mods/updated` even when `last_checked` is fresh.
 
 ---
 

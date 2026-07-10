@@ -30,7 +30,12 @@ from lmm.library import (
 )
 from lmm.logging_config import setup_logging
 from lmm.nexus import NexusClient, NexusError
-from lmm.nexus.updates import check_for_updates, identify_mods
+from lmm.nexus.updates import (
+    check_for_updates,
+    identify_mods,
+    plan_check,
+    plan_identify,
+)
 from lmm.state import (
     StateError,
     StateStore,
@@ -619,6 +624,33 @@ def mod_identify(
         state_store = _state_store(app_ctx)
         config = config_store.load()
         state = state_store.load()
+        if app_ctx.dry_run:
+            planned = plan_identify(config, state, game)
+            if app_ctx.as_json:
+                payload = {
+                    "dry_run": True,
+                    "planned": [
+                        {
+                            "mod": item.mod_ref,
+                            "source_file": str(item.source_file)
+                            if item.source_file
+                            else None,
+                        }
+                        for item in planned
+                    ],
+                }
+                typer.echo(json.dumps(payload, indent=2))
+                return
+            prefix = "[dry-run] "
+            console.print(
+                f"{prefix}Identify {game}: would query Nexus for {len(planned)} mod(s)",
+            )
+            for item in planned:
+                if item.source_file is None:
+                    console.print(f"  {item.mod_ref}: no hashable file found")
+                else:
+                    console.print(f"  {item.mod_ref}: {item.source_file}")
+            return
         with _nexus_client(app_ctx, config_store) as client:
             client.validate_key()
             updated, identified, failures = identify_mods(
@@ -641,12 +673,16 @@ def mod_identify(
                 ],
             }
             typer.echo(json.dumps(payload, indent=2))
+            if failures:
+                raise typer.Exit(1)
             return
         console.print(
             f"Identify {game}: {len(identified)} mod(s) matched in Nexus",
         )
         for item in failures:
             typer.echo(f"  {item.mod_ref}: {item.error}", err=True)
+        if failures:
+            raise typer.Exit(1)
 
     _handle_errors(run)
 
@@ -664,6 +700,29 @@ def mod_check(
         state_store = _state_store(app_ctx)
         config = config_store.load()
         state = state_store.load()
+        if app_ctx.dry_run:
+            planned = plan_check(config, state, game)
+            if app_ctx.as_json:
+                payload = {
+                    "dry_run": True,
+                    "planned": [
+                        {"mod": item.mod_ref, "reason": item.reason} for item in planned
+                    ],
+                    "note": ("Live check also queries mods in Nexus mods/updated set"),
+                }
+                typer.echo(json.dumps(payload, indent=2))
+                return
+            prefix = "[dry-run] "
+            console.print(
+                f"{prefix}Check {game}: would query Nexus for "
+                f"{len(planned)} stale mod(s)",
+            )
+            for item in planned:
+                console.print(f"  {item.mod_ref}: {item.reason}")
+            console.print(
+                "[dim]Live check also queries mods in Nexus mods/updated set[/dim]",
+            )
+            return
         with _nexus_client(app_ctx, config_store) as client:
             client.validate_key()
             updated, updates, failures = check_for_updates(
@@ -685,6 +744,8 @@ def mod_check(
                 ],
             }
             typer.echo(json.dumps(payload, indent=2))
+            if failures:
+                raise typer.Exit(1)
             return
         if not updates and not failures:
             console.print(f"Check {game}: no updates found.")
@@ -703,6 +764,8 @@ def mod_check(
             console.print(table)
         for item in failures:
             typer.echo(f"  {item.mod_ref}: {item.error}", err=True)
+        if failures:
+            raise typer.Exit(1)
 
     _handle_errors(run)
 

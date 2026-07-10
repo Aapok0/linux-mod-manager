@@ -10,7 +10,14 @@ import pytest
 from lmm.config import Config, ConfigError, add_game_profile
 from lmm.library import import_mod
 from lmm.nexus import NexusError
-from lmm.nexus.updates import check_for_updates, identify_mods, is_newer_version
+from lmm.nexus.updates import (
+    _pick_md5_match,
+    _pick_primary_file,
+    check_for_updates,
+    identify_mods,
+    is_newer_version,
+    plan_identify,
+)
 from lmm.state import State
 
 
@@ -34,6 +41,7 @@ class FakeClient:
         self.fail_first_md5 = fail_first_md5
         self.fail_mod_files_for = fail_mod_files_for or set()
         self.md5_calls = 0
+        self.mod_files_calls: list[int] = []
 
     def md5_search(self, _: str, md5_hash: str) -> list[dict]:
         self.md5_calls += 1
@@ -48,6 +56,7 @@ class FakeClient:
         return self.updated_payload
 
     def mod_files(self, _: str, mod_id: int) -> list[dict]:
+        self.mod_files_calls.append(mod_id)
         if mod_id in self.fail_mod_files_for:
             msg = f"mod_files failed for {mod_id}"
             raise NexusError(msg)
@@ -185,3 +194,68 @@ def test_is_newer_version_semver_and_fallback() -> None:
     assert is_newer_version("1.0.1", "1.0.0") is False
     assert is_newer_version("abc", "def") is True
     assert is_newer_version("abc", "abc") is False
+
+
+def test_pick_primary_file_prefers_archive_over_larger_text(tmp_path: Path) -> None:
+    mod_dir = tmp_path / "mod"
+    mod_dir.mkdir()
+    (mod_dir / "readme.txt").write_text("x" * 1000, encoding="utf-8")
+    (mod_dir / "content.pak").write_bytes(b"small")
+    picked = _pick_primary_file(mod_dir)
+    assert picked is not None
+    assert picked.name == "content.pak"
+
+
+def test_pick_md5_match_prefers_exact_file_size() -> None:
+    matches = [
+        {"mod_id": 1, "file_details": {"size": 999}},
+        {"mod_id": 2, "file_details": {"size": 100}},
+    ]
+    chosen = _pick_md5_match(matches, 100)
+    assert chosen["mod_id"] == 2
+
+
+def test_identify_mods_disambiguates_md5_matches_by_size(tmp_path: Path) -> None:
+    config, state = _setup_mod(tmp_path)
+    content = b"abc"
+    source = state.mods[0].source_path
+    (source / "mod.pak").write_bytes(content)
+
+    class SizedClient(FakeClient):
+        def md5_search(self, _: str, __: str) -> list[dict]:
+            return [
+                {"mod_id": 1, "file_details": {"size": 999}},
+                {"mod_id": 42, "file_details": {"size": len(content)}},
+            ]
+
+    updated, results, failures = identify_mods(
+        config, state, "kcd2", client=SizedClient()
+    )
+    assert failures == []
+    assert len(results) == 1
+    assert results[0].nexus_mod_id == 42
+    assert updated.mods[0].nexus_mod_id == 42
+
+
+def test_plan_identify_lists_candidates(tmp_path: Path) -> None:
+    config, state = _setup_mod(tmp_path)
+    planned = plan_identify(config, state, "kcd2")
+    assert len(planned) == 1
+    assert planned[0].mod_ref == "kcd2/moda"
+    assert planned[0].source_file is not None
+
+
+def test_check_for_updates_skips_fresh_mod_not_in_updated_set(tmp_path: Path) -> None:
+    config, state = _setup_mod(tmp_path)
+    seeded = state.model_copy(deep=True)
+    seeded.mods[0] = seeded.mods[0].model_copy(
+        update={
+            "nexus_mod_id": 99,
+            "installed_version": "1.0.0",
+            "last_checked": datetime.now(UTC),
+        }
+    )
+    client = FakeClient()
+    client.updated_payload = []
+    check_for_updates(config, seeded, "kcd2", client=client)
+    assert client.mod_files_calls == []
