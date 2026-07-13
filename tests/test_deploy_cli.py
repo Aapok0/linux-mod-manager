@@ -29,7 +29,7 @@ def test_cli_deploy_and_undeploy(
     state = StateStore(data_dir / "state.json").load()
     assert len(state.mods[0].deployed_links) == 1
 
-    undeploy = runner.invoke(app, [*cli_args, "undeploy", "kcd2"])
+    undeploy = runner.invoke(app, [*cli_args, "undeploy", "kcd2", "--yes"])
     assert undeploy.exit_code == 0, undeploy.output
     assert not (game_target / "file.txt").exists()
 
@@ -131,3 +131,51 @@ def test_cli_deploy_json_output(
     assert result.exit_code == 0, result.output
     assert '"links_created": 1' in result.output
     assert '"game": "kcd2"' in result.output
+
+
+def test_cli_deploy_conflict_exits_nonzero(
+    runner: CliRunner,
+    cli_args: list[str],
+    game_target: Path,
+    kcd2_with_mod_minimal: Path,
+) -> None:
+    (game_target / "a.txt").write_text("blocked", encoding="utf-8")
+    result = runner.invoke(app, [*cli_args, "deploy", "kcd2"])
+    assert result.exit_code == 1, result.output
+    assert "CONFLICT:" in result.output
+    assert "partial failure" in result.output
+
+
+def test_cli_undeploy_requires_yes_in_non_interactive(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_with_mod_minimal: Path,
+    game_target: Path,
+) -> None:
+    runner.invoke(app, [*cli_args, "deploy", "kcd2"])
+    result = runner.invoke(app, [*cli_args, "undeploy", "kcd2"])
+    assert result.exit_code == 1
+    assert "--yes" in result.output
+
+
+def test_cli_remove_mod(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_with_mod_minimal: Path,
+    data_dir: Path,
+) -> None:
+    runner.invoke(app, [*cli_args, "deploy", "kcd2"])
+    result = runner.invoke(app, [*cli_args, "remove", "mod", "--game", "kcd2", "--yes"])
+    assert result.exit_code == 0, result.output
+    state = StateStore(data_dir / "state.json").load()
+    assert state.mods == []
+
+
+def test_cli_doctor_ok(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+) -> None:
+    result = runner.invoke(app, [*cli_args, "doctor"])
+    assert result.exit_code == 0, result.output
+    assert "library_root" in result.output

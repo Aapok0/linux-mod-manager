@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Annotated, TypeVar
 
 import typer
 from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from lmm import __version__
@@ -20,8 +22,10 @@ from lmm.config import (
     add_game_target,
     remove_game_target,
 )
-from lmm.deploy import DeployError, deploy_game, undeploy_game
+from lmm.deploy import DeployError, deploy_game, remove_mod, undeploy_game
+from lmm.doctor import doctor_has_errors, run_doctor
 from lmm.library import (
+    ImportAction,
     LibraryError,
     import_mod,
     list_mods,
@@ -31,6 +35,7 @@ from lmm.library import (
 from lmm.logging_config import setup_logging
 from lmm.nexus import NexusClient, NexusError
 from lmm.nexus.updates import (
+    IdentifySkip,
     check_for_updates,
     identify_mods,
     plan_check,
@@ -40,6 +45,7 @@ from lmm.state import (
     StateError,
     StateStore,
     adjust_mod_targets_after_remove,
+    find_mod,
     mods_referencing_target_index,
     set_mod_enabled,
 )
@@ -47,7 +53,10 @@ from lmm.state import (
 app = typer.Typer(
     name="lmm",
     no_args_is_help=True,
-    help="Linux Mod Manager (lmm) for Nexus Mods and symlink deployment.",
+    help=(
+        "Linux Mod Manager (lmm): game add → add → deploy → check. "
+        "Symlink-based mod deployment with Nexus version checking."
+    ),
 )
 game_app = typer.Typer(help="Manage game profiles.")
 app.add_typer(game_app, name="game")
@@ -55,6 +64,7 @@ target_app = typer.Typer(help="Manage deploy targets for a game profile.")
 game_app.add_typer(target_app, name="target")
 
 console = Console()
+stderr_console = Console(stderr=True)
 
 T = TypeVar("T")
 
@@ -96,6 +106,58 @@ def _nexus_client(app_ctx: AppContext, config_store: ConfigStore) -> NexusClient
     config = config_store.load()
     api_key = config_store.resolve_api_key(config)
     return NexusClient(api_key=api_key)
+
+
+def _truncate_path(path: Path, max_len: int = 60) -> str:
+    text = str(path)
+    if len(text) <= max_len:
+        return text
+    return f"…{text[-(max_len - 1) :]}"
+
+
+def _confirm_action(*, yes: bool, dry_run: bool, prompt: str) -> None:
+    if dry_run or yes:
+        return
+    if sys.stdin.isatty():
+        if not typer.confirm(prompt, default=False):
+            raise typer.Exit(1)
+        return
+    typer.echo("Pass --yes to confirm in non-interactive mode", err=True)
+    raise typer.Exit(1)
+
+
+def _count_game_links(state, game_id: str) -> int:
+    return sum(len(mod.deployed_links) for mod in state.mods if mod.game == game_id)
+
+
+def _identify_degraded(
+    skips: list[IdentifySkip],
+    failures: list[object],
+) -> bool:
+    if failures:
+        return True
+    return any(skip.reason in ("no_hashable_file", "no_nexus_match") for skip in skips)
+
+
+def _deploy_apply_hint(game: str) -> None:
+    console.print(f"Run [bold]lmm deploy {game}[/bold] to apply.")
+
+
+def _import_action_message(action: ImportAction, record) -> str:
+    if action == ImportAction.COPIED:
+        return (
+            f"Copied mod [bold]{record.game}/{record.name}[/bold] "
+            f"to {record.source_path}"
+        )
+    if action == ImportAction.MOVED:
+        return (
+            f"Moved mod [bold]{record.game}/{record.name}[/bold] "
+            f"to {record.source_path}"
+        )
+    return (
+        f"Registered mod [bold]{record.game}/{record.name}[/bold] "
+        f"in place at {record.source_path}"
+    )
 
 
 @app.callback()
@@ -155,7 +217,7 @@ def game_add(
         str | None,
         typer.Option(
             "--library-subpath",
-            help="Subpath under library_root for this game's mods",
+            help="Subpath under library_root for this game's mods (default: game id)",
         ),
     ] = None,
 ) -> None:
@@ -311,7 +373,24 @@ def game_target_remove(
         if game_id not in config.games:
             raise typer.BadParameter(f"Unknown game profile: {game_id}")
 
-        for target_index in sorted(set(index), reverse=True):
+        indices = sorted(set(index), reverse=True)
+        if app_ctx.dry_run:
+            if app_ctx.as_json:
+                payload = {
+                    "dry_run": True,
+                    "game": game_id,
+                    "remove_indices": indices,
+                }
+                typer.echo(json.dumps(payload, indent=2))
+                return
+            prefix = "[dry-run] "
+            console.print(
+                f"{prefix}Would remove deploy target index(es) "
+                f"[{', '.join(str(i) for i in indices)}] from {game_id}",
+            )
+            return
+
+        for target_index in indices:
             refs = mods_referencing_target_index(state, game_id, target_index)
             if refs:
                 names = ", ".join(mod.name for mod in refs)
@@ -363,6 +442,13 @@ def mod_add(
         Path | None,
         typer.Option("--target-path", help="Absolute deploy target path override"),
     ] = None,
+    move: Annotated[
+        bool,
+        typer.Option(
+            "--move",
+            help="Move mod tree into library instead of copying (outside library only)",
+        ),
+    ] = False,
 ) -> None:
     """Import a mod directory and record it in state."""
     if target_index is not None and target_path is not None:
@@ -382,7 +468,7 @@ def mod_add(
             target_override = str(target_path)
         else:
             target_override = None
-        updated_state, record = import_mod(
+        updated_state, record, action = import_mod(
             config,
             state,
             source,
@@ -390,15 +476,15 @@ def mod_add(
             name=name,
             nexus_mod_id=mod_id,
             target=target_override,
+            copy=not move,
         )
         state_store.save(updated_state)
         if app_ctx.as_json:
-            typer.echo(record.model_dump_json(indent=2))
+            payload = record.model_dump(mode="json")
+            payload["import_action"] = action.value
+            typer.echo(json.dumps(payload, indent=2))
             return
-        console.print(
-            f"Added mod [bold]{record.game}/{record.name}[/bold] "
-            f"at {record.source_path}",
-        )
+        console.print(_import_action_message(action, record))
 
     _handle_errors(run)
 
@@ -412,7 +498,10 @@ def mod_list(
     ] = None,
     game: Annotated[
         str | None,
-        typer.Option("--game", help="Filter by game profile id"),
+        typer.Option(
+            "--game",
+            help="Filter by game profile id (alternative to positional)",
+        ),
     ] = None,
 ) -> None:
     """List registered mods."""
@@ -430,6 +519,7 @@ def mod_list(
         if not mods:
             console.print("No mods registered.")
             return
+        show_source = app_ctx.verbose
         table = Table(title="Mods")
         table.add_column("Game")
         table.add_column("Name")
@@ -438,10 +528,11 @@ def mod_list(
         table.add_column("Update")
         table.add_column("Enabled")
         table.add_column("Deployed")
-        table.add_column("Source")
+        if show_source:
+            table.add_column("Source")
         for mod in mods:
-            update_cell = "[yellow]yes[/yellow]" if mod.update_available else "no"
-            table.add_row(
+            update_cell = "UPDATE" if mod.update_available else "—"
+            row = [
                 mod.game,
                 mod.name,
                 mod.installed_version or "",
@@ -449,8 +540,10 @@ def mod_list(
                 update_cell,
                 "yes" if mod.enabled else "no",
                 "yes" if mod_is_deployed(mod) else "no",
-                str(mod.source_path),
-            )
+            ]
+            if show_source:
+                row.append(_truncate_path(mod.source_path))
+            table.add_row(*row)
         console.print(table)
 
     _handle_errors(run)
@@ -487,18 +580,25 @@ def mod_deploy(
                 "warnings": outcome.warnings,
             }
             typer.echo(json.dumps(payload, indent=2))
+            if outcome.conflicts:
+                raise typer.Exit(1)
             return
         prefix = "[dry-run] " if app_ctx.dry_run else ""
-        console.print(
+        summary = (
             f"{prefix}Deploy {game}: "
             f"{outcome.links_created} link(s) created, "
             f"{outcome.links_removed} removed, "
-            f"{outcome.links_skipped} skipped",
+            f"{outcome.links_skipped} skipped"
         )
+        if outcome.conflicts:
+            summary += f", partial failure: {len(outcome.conflicts)} conflict(s)"
+        console.print(summary)
         for conflict in outcome.conflicts:
-            console.print(f"[yellow]Conflict:[/yellow] {conflict}")
+            console.print(f"CONFLICT: {conflict}")
         for warning in outcome.warnings:
-            console.print(f"[yellow]Warning:[/yellow] {warning}")
+            console.print(f"WARNING: {warning}")
+        if outcome.conflicts:
+            raise typer.Exit(1)
 
     _handle_errors(run)
 
@@ -507,6 +607,10 @@ def mod_deploy(
 def mod_undeploy(
     ctx: typer.Context,
     game: Annotated[str, typer.Argument(help="Game profile id")],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip confirmation prompt"),
+    ] = False,
 ) -> None:
     """Remove deployed symlinks recorded for a game."""
 
@@ -515,6 +619,12 @@ def mod_undeploy(
         config = _config_store(app_ctx).load()
         state_store = _state_store(app_ctx)
         state = state_store.load()
+        link_count = _count_game_links(state, game)
+        _confirm_action(
+            yes=yes,
+            dry_run=app_ctx.dry_run,
+            prompt=f"Undeploy {link_count} link(s) for {game}?",
+        )
         updated_state, outcome = undeploy_game(
             config,
             state,
@@ -540,7 +650,122 @@ def mod_undeploy(
             f"{outcome.links_skipped} skipped",
         )
         for warning in outcome.warnings:
-            console.print(f"[yellow]Warning:[/yellow] {warning}")
+            console.print(f"WARNING: {warning}")
+
+    _handle_errors(run)
+
+
+@app.command("remove")
+def mod_remove(
+    ctx: typer.Context,
+    mod: Annotated[str, typer.Argument(help="Mod name or game/name")],
+    game: Annotated[
+        str | None,
+        typer.Option("--game", help="Disambiguate mod name"),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip confirmation prompt"),
+    ] = False,
+    delete_files: Annotated[
+        bool,
+        typer.Option(
+            "--delete-files",
+            help="Delete mod files under library_root (requires --yes)",
+        ),
+    ] = False,
+) -> None:
+    """Unregister a mod from state and remove its deployed symlinks."""
+
+    def run() -> None:
+        app_ctx = _ctx(ctx)
+        config_store = _config_store(app_ctx)
+        state_store = _state_store(app_ctx)
+        config = config_store.load()
+        state = state_store.load()
+        record = find_mod(state, mod, default_game=game)
+        mod_ref = f"{record.game}/{record.name}"
+        if delete_files and not yes and not app_ctx.dry_run:
+            typer.echo("--delete-files requires --yes", err=True)
+            raise typer.Exit(1)
+        if not app_ctx.dry_run:
+            _confirm_action(
+                yes=yes,
+                dry_run=False,
+                prompt=(
+                    f"Remove mod {mod_ref} "
+                    f"({len(record.deployed_links)} deployed link(s)"
+                    f"{', delete library files' if delete_files else ''})?"
+                ),
+            )
+        updated_state, outcome = remove_mod(
+            config,
+            state,
+            record,
+            dry_run=app_ctx.dry_run,
+            delete_files=delete_files,
+        )
+        if not app_ctx.dry_run:
+            state_store.save(updated_state)
+        if app_ctx.as_json:
+            payload = {
+                "mod": mod_ref,
+                "dry_run": app_ctx.dry_run,
+                "links_removed": outcome.links_removed,
+                "links_skipped": outcome.links_skipped,
+                "deleted_files": outcome.deleted_files,
+                "warnings": outcome.warnings,
+            }
+            typer.echo(json.dumps(payload, indent=2))
+            return
+        prefix = "[dry-run] " if app_ctx.dry_run else ""
+        console.print(
+            f"{prefix}Removed mod [bold]{mod_ref}[/bold]: "
+            f"{outcome.links_removed} link(s) removed",
+        )
+        if outcome.deleted_files:
+            console.print(f"{prefix}Deleted library files for {mod_ref}")
+        for warning in outcome.warnings:
+            console.print(f"WARNING: {warning}")
+
+    _handle_errors(run)
+
+
+@app.command("doctor")
+def mod_doctor(ctx: typer.Context) -> None:
+    """Validate config, library paths, and mod setup."""
+
+    def run() -> None:
+        app_ctx = _ctx(ctx)
+        config_store = _config_store(app_ctx)
+        state_store = _state_store(app_ctx)
+        checks = run_doctor(config_store, state_store)
+        if app_ctx.as_json:
+            typer.echo(
+                json.dumps(
+                    [
+                        {
+                            "name": check.name,
+                            "status": check.status,
+                            "message": check.message,
+                        }
+                        for check in checks
+                    ],
+                    indent=2,
+                ),
+            )
+            if doctor_has_errors(checks):
+                raise typer.Exit(1)
+            return
+        table = Table(title="lmm doctor")
+        table.add_column("Check")
+        table.add_column("Status")
+        table.add_column("Message")
+        for check in checks:
+            table.add_row(check.name, check.status, check.message)
+        console.print(table)
+        if doctor_has_errors(checks):
+            raise typer.Exit(1)
 
     _handle_errors(run)
 
@@ -574,6 +799,7 @@ def mod_enable(
             )
             return
         console.print(f"Enabled mod [bold]{record.game}/{record.name}[/bold]")
+        _deploy_apply_hint(record.game)
 
     _handle_errors(run)
 
@@ -607,6 +833,7 @@ def mod_disable(
             )
             return
         console.print(f"Disabled mod [bold]{record.game}/{record.name}[/bold]")
+        _deploy_apply_hint(record.game)
 
     _handle_errors(run)
 
@@ -653,9 +880,33 @@ def mod_identify(
             return
         with _nexus_client(app_ctx, config_store) as client:
             client.validate_key()
-            updated, identified, failures = identify_mods(
-                config, state, game, client=client
-            )
+
+            def do_identify(
+                on_progress: Callable[[str, str], None] | None,
+            ) -> tuple:
+                return identify_mods(
+                    config,
+                    state,
+                    game,
+                    client=client,
+                    on_progress=on_progress,
+                )
+
+            if app_ctx.as_json:
+                updated, identified, failures, skips = do_identify(None)
+            else:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=stderr_console,
+                    transient=True,
+                ) as progress:
+                    task_id = progress.add_task("Identifying mods", total=None)
+
+                    def on_progress(mod_ref: str, phase: str) -> None:
+                        progress.update(task_id, description=f"{phase} {mod_ref}")
+
+                    updated, identified, failures, skips = do_identify(on_progress)
         state_store.save(updated)
         if app_ctx.as_json:
             payload = {
@@ -671,17 +922,22 @@ def mod_identify(
                 "failures": [
                     {"mod": item.mod_ref, "error": item.error} for item in failures
                 ],
+                "skips": [
+                    {"mod": item.mod_ref, "reason": item.reason} for item in skips
+                ],
             }
             typer.echo(json.dumps(payload, indent=2))
-            if failures:
+            if _identify_degraded(skips, failures):
                 raise typer.Exit(1)
             return
         console.print(
             f"Identify {game}: {len(identified)} mod(s) matched in Nexus",
         )
+        for item in skips:
+            typer.echo(f"  SKIP {item.mod_ref}: {item.reason}", err=True)
         for item in failures:
             typer.echo(f"  {item.mod_ref}: {item.error}", err=True)
-        if failures:
+        if _identify_degraded(skips, failures):
             raise typer.Exit(1)
 
     _handle_errors(run)
@@ -725,9 +981,33 @@ def mod_check(
             return
         with _nexus_client(app_ctx, config_store) as client:
             client.validate_key()
-            updated, updates, failures = check_for_updates(
-                config, state, game, client=client
-            )
+
+            def do_check(
+                on_progress: Callable[[str, str], None] | None,
+            ) -> tuple:
+                return check_for_updates(
+                    config,
+                    state,
+                    game,
+                    client=client,
+                    on_progress=on_progress,
+                )
+
+            if app_ctx.as_json:
+                updated, updates, failures, version_fallback = do_check(None)
+            else:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=stderr_console,
+                    transient=True,
+                ) as progress:
+                    task_id = progress.add_task("Checking mods", total=None)
+
+                    def on_progress(mod_ref: str, phase: str) -> None:
+                        progress.update(task_id, description=f"{phase} {mod_ref}")
+
+                    updated, updates, failures, version_fallback = do_check(on_progress)
         state_store.save(updated)
         if app_ctx.as_json:
             payload = {
@@ -736,12 +1016,14 @@ def mod_check(
                         "mod": item.mod_ref,
                         "installed_version": item.installed_version,
                         "latest_version": item.latest_version,
+                        "non_numeric_versions": item.non_numeric_versions,
                     }
                     for item in updates
                 ],
                 "failures": [
                     {"mod": item.mod_ref, "error": item.error} for item in failures
                 ],
+                "version_compare_fallback": version_fallback,
             }
             typer.echo(json.dumps(payload, indent=2))
             if failures:
@@ -749,6 +1031,10 @@ def mod_check(
             return
         if not updates and not failures:
             console.print(f"Check {game}: no updates found.")
+            if version_fallback:
+                console.print(
+                    "Version comparison used string equality (non-numeric versions).",
+                )
             return
         if updates:
             table = Table(title=f"Updates for {game}")
@@ -762,6 +1048,10 @@ def mod_check(
                     item.latest_version,
                 )
             console.print(table)
+        if version_fallback:
+            console.print(
+                "Version comparison used string equality (non-numeric versions).",
+            )
         for item in failures:
             typer.echo(f"  {item.mod_ref}: {item.error}", err=True)
         if failures:

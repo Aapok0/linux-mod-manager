@@ -58,15 +58,17 @@ Global options: `--config PATH`, `--dry-run`, `--json`, `--verbose`.
 | `lmm game target add <id> --target <path> [--target ...]` | Append deploy target(s) to an existing game profile |
 | `lmm game target list <id>` | List deploy targets with indices for `--target-index` |
 | `lmm game target remove <id> --index <n> [--index ...]` | Remove secondary deploy target(s); index 0 cannot be removed |
-| `lmm add <name_or_path> --game <id> [--mod-id N] [--name NAME] [--target-index N \| --target-path PATH]` | Import/register a mod; bare name resolves under game's library dir (P2) |
+| `lmm add <name_or_path> --game <id> [--mod-id N] [--name NAME] [--move] [--target-index N \| --target-path PATH]` | Import/register a mod; bare name resolves under game's library dir (P2) |
 | `lmm list [game]` | List mods (name, game, version, enabled, deployed) |
 | `lmm enable <mod>` / `lmm disable <mod>` | Toggle whether a mod deploys (run `deploy` afterward to apply) |
 | `lmm deploy <game>` | Reconcile game dir: remove disabled mods' links, symlink enabled mods |
-| `lmm undeploy <game>` | Remove only the symlinks recorded in state |
+| `lmm undeploy <game> [--yes]` | Remove only the symlinks recorded in state |
+| `lmm remove <mod> [--yes] [--delete-files]` | Unregister mod from state; undeploy links first |
+| `lmm doctor` | Validate config, paths, and mod setup |
 | `lmm identify <game>` | md5_search local files -> Nexus mod_id/version, fill state |
 | `lmm check <game>` | Compare installed version vs Nexus latest; report updates (no download) |
 
-Conventions: a mod is referenced by its `name` (unique within a game) or `game/name`. `deploy`/`undeploy` are idempotent and conflict-safe. `--dry-run` prints planned actions without filesystem, network, or state writes (including `identify`/`check`). Partial Nexus failures exit 1 after saving successful mods.
+Conventions: a mod is referenced by its `name` (unique within a game) or `game/name`. `deploy` exits 1 on conflicts; `undeploy`/`remove` prompt on TTY unless `--yes`. `--dry-run` prints planned actions without filesystem, network, or state writes (including `identify`/`check`). `identify` exits 1 on API failures or unmatched mods; partial Nexus state is saved.
 
 ## Tech stack
 
@@ -114,6 +116,7 @@ linux-mod-manager/
     ├── state.py          # state.json load/save, models, migrations
     ├── library.py        # import/list mods
     ├── deploy.py         # symlink engine, conflict detection
+    ├── doctor.py         # setup validation
     └── nexus/
         ├── client.py     # v1 REST client, auth, rate limit, cache
         └── updates.py    # version compare, md5 identify

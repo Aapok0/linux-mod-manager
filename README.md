@@ -15,6 +15,8 @@ source .venv/bin/activate
 pip install -e .
 ```
 
+Shell completion: `lmm --install-completion bash` or `zsh` (see `lmm --show-completion`).
+
 Or install runtime dependencies from the lockfile:
 
 ```bash
@@ -54,6 +56,8 @@ Alternatively, create `~/.config/lmm/config.toml` manually with `library_root` a
 See [Configuration](#configuration) for all options.
 
 ### 2. Register a game
+
+Run `lmm doctor` after setup to validate paths and config.
 
 ```bash
 lmm game add kcd2 \

@@ -40,6 +40,16 @@ class UndeployOutcome:
 
 
 @dataclass
+class RemoveModOutcome:
+    mod_ref: str
+    links_removed: int = 0
+    links_skipped: int = 0
+    deleted_files: bool = False
+    warnings: list[str] = field(default_factory=list)
+    dry_run: bool = False
+
+
+@dataclass
 class LinkRemovalResult:
     mod: ModRecord
     links_removed: int = 0
@@ -215,12 +225,17 @@ def deploy_game(
                     updated_mods[mod_key] = mod
                     continue
                 outcome.conflicts.append(
-                    f"Conflict at {link}: path exists and is not an lmm-owned symlink",
+                    f"Conflict at {link}: foreign symlink (not owned by lmm)",
                 )
                 continue
-            outcome.conflicts.append(
-                f"Conflict at {link}: path exists and is not an lmm-owned symlink",
-            )
+            if link.is_symlink():
+                outcome.conflicts.append(
+                    f"Conflict at {link}: foreign symlink (not owned by lmm)",
+                )
+            else:
+                outcome.conflicts.append(
+                    f"Conflict at {link}: foreign file blocks symlink",
+                )
             continue
 
         created_dirs = list(mod.created_dirs)
@@ -245,6 +260,48 @@ def deploy_game(
 
     new_mods = [updated_mods[(mod.game, mod.name)] for mod in state.mods]
     return state.model_copy(update={"mods": new_mods}), outcome
+
+
+def remove_mod(
+    config: Config,
+    state: State,
+    mod: ModRecord,
+    *,
+    dry_run: bool = False,
+    delete_files: bool = False,
+) -> tuple[State, RemoveModOutcome]:
+    import shutil
+
+    from lmm.paths import path_within_root
+    from lmm.state import remove_mod_record
+
+    outcome = RemoveModOutcome(
+        mod_ref=f"{mod.game}/{mod.name}",
+        dry_run=dry_run,
+    )
+    removal = _remove_mod_links(mod, dry_run=dry_run)
+    outcome.links_removed = removal.links_removed
+    outcome.links_skipped = removal.links_skipped
+    outcome.warnings.extend(removal.warnings)
+
+    if delete_files:
+        library_root = config.library_root.resolve()
+        source = mod.source_path.resolve()
+        if not path_within_root(source, library_root):
+            msg = (
+                f"Refusing to delete files outside library_root: {source} "
+                f"(library_root={library_root})"
+            )
+            raise DeployError(msg)
+        if source.exists() and not dry_run:
+            shutil.rmtree(source)
+        outcome.deleted_files = delete_files
+
+    if dry_run:
+        return state, outcome
+
+    updated = remove_mod_record(state, mod.game, mod.name)
+    return updated, outcome
 
 
 def undeploy_game(

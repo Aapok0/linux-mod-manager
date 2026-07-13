@@ -69,6 +69,29 @@ class Config(BaseModel):
         raise TypeError(msg)
 
 
+def _format_config_validation_error(exc: ValidationError) -> str:
+    if not exc.errors():
+        return "Invalid config"
+    first = exc.errors()[0]
+    loc = first.get("loc", ())
+    msg = str(first.get("msg", "validation error"))
+    if len(loc) >= 2 and loc[0] == "games" and isinstance(loc[1], str):
+        game_id = loc[1]
+        field = loc[2] if len(loc) > 2 else None
+        if field == "targets":
+            return (
+                f"Game '{game_id}' is missing deploy targets in config.toml "
+                f"(add at least one --target on 'lmm game add')"
+            )
+        if field:
+            return f"Game '{game_id}' field '{field}': {msg}"
+        return f"Game '{game_id}': {msg}"
+    if loc == ("library_root",):
+        return f"library_root in config.toml: {msg}"
+    location = ".".join(str(part) for part in loc) if loc else "config"
+    return f"Invalid config at {location}: {msg}"
+
+
 class ConfigStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or default_config_path()
@@ -87,7 +110,8 @@ class ConfigStore:
                 msg = f"Invalid TOML in config at {self.path}: {exc}"
                 raise ConfigError(msg) from exc
             except ValidationError as exc:
-                msg = f"Invalid config at {self.path}: {exc}"
+                detail = _format_config_validation_error(exc)
+                msg = f"Invalid config at {self.path}: {detail}"
                 raise ConfigError(msg) from exc
         return self._apply_env_overrides(config)
 
