@@ -47,7 +47,7 @@ def _add_mod(
     source = tmp_path / "incoming" / name
     source.mkdir(parents=True)
     (source / "data.txt").write_text("mod", encoding="utf-8")
-    state, _ = import_mod(config, state, source, game_id="kcd2", target=target)
+    state, _, _ = import_mod(config, state, source, game_id="kcd2", target=target)
     return config, state
 
 
@@ -222,7 +222,7 @@ def test_created_dirs_lifecycle(
     nested_dir = source / "sub"
     nested_dir.mkdir(parents=True)
     (nested_dir / "data.txt").write_text("mod", encoding="utf-8")
-    state, _ = import_mod(config, State(), source, game_id="kcd2", name="nested")
+    state, _, _ = import_mod(config, State(), source, game_id="kcd2", name="nested")
     deployed, _ = deploy_game(config, state, "kcd2")
     created = game_target / "sub"
     assert created.is_dir()

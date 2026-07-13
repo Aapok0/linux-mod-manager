@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import enum
 import shutil
 from pathlib import Path
 
@@ -17,6 +18,12 @@ from lmm.state import ModRecord, State, add_mod_record
 
 class LibraryError(Exception):
     """Raised when a library operation fails."""
+
+
+class ImportAction(enum.StrEnum):
+    REGISTERED = "registered"
+    COPIED = "copied"
+    MOVED = "moved"
 
 
 def game_library_dir(config: Config, game_id: str) -> Path:
@@ -69,7 +76,7 @@ def import_mod(
     nexus_mod_id: int | None = None,
     target: int | str | None = None,
     copy: bool = True,
-) -> tuple[State, ModRecord]:
+) -> tuple[State, ModRecord, ImportAction]:
     if game_id not in config.games:
         msg = f"Unknown game profile: {game_id}"
         raise LibraryError(msg)
@@ -95,6 +102,7 @@ def import_mod(
                 )
                 raise LibraryError(msg)
             destination = source
+            action = ImportAction.REGISTERED
         else:
             destination = resolve_mod_destination(config, game_id, mod_name)
             if destination.exists():
@@ -103,8 +111,10 @@ def import_mod(
             destination.parent.mkdir(parents=True, exist_ok=True)
             if copy:
                 shutil.copytree(source, destination)
+                action = ImportAction.COPIED
             else:
                 shutil.move(str(source), str(destination))
+                action = ImportAction.MOVED
     except PathValidationError as exc:
         raise LibraryError(str(exc)) from exc
 
@@ -116,7 +126,7 @@ def import_mod(
         target=target,
     )
     updated_state = add_mod_record(state, record)
-    return updated_state, record
+    return updated_state, record, action
 
 
 def list_mods(state: State, game_id: str | None = None) -> list[ModRecord]:

@@ -154,8 +154,24 @@ def find_mod(
     if not matches:
         msg = f"Mod not found: {reference}"
         raise StateError(msg)
-    msg = f"Ambiguous mod reference: {reference}"
+    refs = ", ".join(f"{mod.game}/{mod.name}" for mod in matches)
+    msg = (
+        f"Ambiguous mod reference: {reference} (matches: {refs}). "
+        "Use --game to disambiguate."
+    )
     raise StateError(msg)
+
+
+def remove_mod_record(state: State, game: str, name: str) -> State:
+    updated = state.model_copy(deep=True)
+    remaining = [
+        mod for mod in updated.mods if not (mod.game == game and mod.name == name)
+    ]
+    if len(remaining) == len(updated.mods):
+        msg = f"Mod not found: {game}/{name}"
+        raise StateError(msg)
+    updated.mods = remaining
+    return updated
 
 
 def add_mod_record(state: State, record: ModRecord) -> State:

@@ -7,7 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from lmm.state import ModRecord, State, StateError, StateStore, add_mod_record, find_mod
+from lmm.state import (
+    ModRecord,
+    State,
+    StateError,
+    StateStore,
+    add_mod_record,
+    find_mod,
+    remove_mod_record,
+)
 
 
 def test_state_round_trip(tmp_path: Path) -> None:
@@ -57,8 +65,18 @@ def test_find_mod_ambiguous() -> None:
             ModRecord(name="foo", game="b", source_path=Path("/b")),
         ]
     )
-    with pytest.raises(StateError, match="Ambiguous"):
+    with pytest.raises(StateError, match="matches:"):
         find_mod(state, "foo")
+
+
+def test_remove_mod_record() -> None:
+    state = State(
+        mods=[ModRecord(name="foo", game="kcd2", source_path=Path("/tmp/foo"))]
+    )
+    updated = remove_mod_record(state, "kcd2", "foo")
+    assert updated.mods == []
+    with pytest.raises(StateError, match="Mod not found"):
+        remove_mod_record(updated, "kcd2", "foo")
 
 
 def test_add_mod_record_rejects_duplicate() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -42,10 +43,17 @@ class IdentifyFailure:
 
 
 @dataclass
+class IdentifySkip:
+    mod_ref: str
+    reason: str
+
+
+@dataclass
 class UpdateResult:
     mod_ref: str
     installed_version: str | None
     latest_version: str
+    non_numeric_versions: bool = False
 
 
 @dataclass
@@ -166,7 +174,8 @@ def identify_mods(
     game_id: str,
     *,
     client: NexusClient,
-) -> tuple[State, list[IdentifyResult], list[IdentifyFailure]]:
+    on_progress: Callable[[str, str], None] | None = None,
+) -> tuple[State, list[IdentifyResult], list[IdentifyFailure], list[IdentifySkip]]:
     profile = config.games.get(game_id)
     if profile is None:
         msg = f"Unknown game profile: {game_id}"
@@ -175,23 +184,32 @@ def identify_mods(
     updated = state.model_copy(deep=True)
     results: list[IdentifyResult] = []
     failures: list[IdentifyFailure] = []
+    skips: list[IdentifySkip] = []
     for index, mod in enumerate(updated.mods):
         if mod.game != game_id or mod.nexus_mod_id is not None:
             continue
+        mod_ref = _mod_ref(mod)
         candidate = _pick_primary_file(mod.source_path.resolve())
         if candidate is None:
+            skips.append(IdentifySkip(mod_ref=mod_ref, reason="no_hashable_file"))
             continue
+        if on_progress:
+            on_progress(mod_ref, "hashing")
         md5_hash = mod.file_md5 or _file_md5(candidate)
+        if on_progress:
+            on_progress(mod_ref, "querying")
         try:
             matches = client.md5_search(profile.nexus_domain, md5_hash)
         except NexusError as exc:
-            failures.append(IdentifyFailure(mod_ref=_mod_ref(mod), error=str(exc)))
+            failures.append(IdentifyFailure(mod_ref=mod_ref, error=str(exc)))
             continue
         if not matches:
+            skips.append(IdentifySkip(mod_ref=mod_ref, reason="no_nexus_match"))
             continue
         chosen = _pick_md5_match(matches, candidate.stat().st_size)
         nexus_mod_id = _entry_mod_id(chosen)
         if nexus_mod_id is None:
+            skips.append(IdentifySkip(mod_ref=mod_ref, reason="no_nexus_match"))
             continue
         file_id = _entry_file_id(chosen)
         version = _entry_version(chosen)
@@ -212,7 +230,7 @@ def identify_mods(
                 installed_version=updated_mod.installed_version,
             )
         )
-    return updated, results, failures
+    return updated, results, failures, skips
 
 
 def plan_identify(
@@ -277,6 +295,14 @@ def is_newer_version(installed: str | None, latest: str | None) -> bool:
     return latest != installed
 
 
+def version_compare_used_fallback(installed: str | None, latest: str | None) -> bool:
+    if latest is None or installed is None:
+        return False
+    left = _normalize_version(installed)
+    right = _normalize_version(latest)
+    return left is None or right is None
+
+
 def _file_sort_key(item: dict[str, Any]) -> tuple[int, int, int]:
     category = _extract_str(item, "category_name", "category")
     category_score = 1 if category and category.upper() == "MAIN" else 0
@@ -312,7 +338,8 @@ def check_for_updates(
     client: NexusClient,
     period: str = "1w",
     stale_after: timedelta = timedelta(hours=24),
-) -> tuple[State, list[UpdateResult], list[UpdateFailure]]:
+    on_progress: Callable[[str, str], None] | None = None,
+) -> tuple[State, list[UpdateResult], list[UpdateFailure], bool]:
     profile = config.games.get(game_id)
     if profile is None:
         msg = f"Unknown game profile: {game_id}"
@@ -324,6 +351,7 @@ def check_for_updates(
     updated = state.model_copy(deep=True)
     changes: list[UpdateResult] = []
     failures: list[UpdateFailure] = []
+    version_fallback_used = False
 
     for index, mod in enumerate(updated.mods):
         if mod.game != game_id or mod.nexus_mod_id is None:
@@ -331,12 +359,18 @@ def check_for_updates(
         stale = mod.last_checked is None or (now - mod.last_checked) >= stale_after
         if mod.nexus_mod_id not in updated_ids and not stale:
             continue
+        mod_ref = _mod_ref(mod)
+        if on_progress:
+            on_progress(mod_ref, "querying")
         try:
             files = client.mod_files(profile.nexus_domain, mod.nexus_mod_id)
         except NexusError as exc:
-            failures.append(UpdateFailure(mod_ref=_mod_ref(mod), error=str(exc)))
+            failures.append(UpdateFailure(mod_ref=mod_ref, error=str(exc)))
             continue
         file_id, latest = _latest_file_version(files)
+        fallback = version_compare_used_fallback(mod.installed_version, latest)
+        if fallback:
+            version_fallback_used = True
         has_update = is_newer_version(mod.installed_version, latest)
         updated_mod = mod.model_copy(
             update={
@@ -353,6 +387,7 @@ def check_for_updates(
                     mod_ref=_mod_ref(updated_mod),
                     installed_version=updated_mod.installed_version,
                     latest_version=latest,
+                    non_numeric_versions=fallback,
                 )
             )
-    return updated, changes, failures
+    return updated, changes, failures, version_fallback_used
