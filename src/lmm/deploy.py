@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lmm.config import Config
+from lmm.config import Config, GameProfile
 from lmm.state import DeployedLink, ModRecord, State
 
 
@@ -93,11 +93,26 @@ def _owned_link(link: Path, source: Path, mod: ModRecord) -> bool:
     return False
 
 
+def resolve_link_path(
+    profile: GameProfile,
+    mod: ModRecord,
+    deploy_target: Path,
+    source_file: Path,
+    source_root: Path,
+) -> Path:
+    """Compute symlink destination from game deploy layout and mod source."""
+    relative = source_file.relative_to(source_root)
+    if profile.deploy_layout == "mod_subdir":
+        return deploy_target / mod.name / relative
+    return deploy_target / relative
+
+
 def build_link_plan(config: Config, state: State, game_id: str) -> list[PlannedLink]:
     if game_id not in config.games:
         msg = f"Unknown game profile: {game_id}"
         raise DeployError(msg)
 
+    profile = config.games[game_id]
     plan: list[PlannedLink] = []
     for mod in state.mods:
         if mod.game != game_id or not mod.enabled:
@@ -110,8 +125,13 @@ def build_link_plan(config: Config, state: State, game_id: str) -> list[PlannedL
         for source_file in sorted(source_root.rglob("*")):
             if not source_file.is_file():
                 continue
-            relative = source_file.relative_to(source_root)
-            link_path = deploy_target / relative
+            link_path = resolve_link_path(
+                profile,
+                mod,
+                deploy_target,
+                source_file,
+                source_root,
+            )
             plan.append(PlannedLink(mod=mod, source=source_file, link=link_path))
     return plan
 

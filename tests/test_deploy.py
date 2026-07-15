@@ -7,13 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from lmm.config import Config, add_game_profile
+from lmm.config import Config, GameProfile, add_game_profile
 from lmm.deploy import (
     DeployError,
     build_link_plan,
     deploy_game,
     remove_mod,
     resolve_deploy_target,
+    resolve_link_path,
     undeploy_game,
 )
 from lmm.library import import_mod
@@ -363,3 +364,144 @@ def test_deploy_string_target_override(
     deploy_game(config, state, "kcd2")
     assert (custom / "data.txt").is_symlink()
     assert not (game_target / "data.txt").exists()
+
+
+def _mod_subdir_config(
+    tmp_path: Path,
+) -> tuple[Config, Path]:
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    game_target = tmp_path / "game" / "Mods"
+    game_target.mkdir(parents=True)
+    config = add_game_profile(
+        Config(library_root=library_root),
+        "kcd2",
+        nexus_domain="kcd",
+        targets=[game_target],
+        library_subpath="KCD2/Mods",
+        deploy_layout="mod_subdir",
+    )
+    return config, game_target
+
+
+def _add_kcd2_mod(
+    config: Config,
+    state: State,
+    tmp_path: Path,
+    *,
+    name: str,
+) -> State:
+    source = tmp_path / "incoming" / name
+    source.mkdir(parents=True)
+    (source / "mod.manifest").write_text("<kcd_mod/>", encoding="utf-8")
+    data_dir = source / "Data"
+    data_dir.mkdir()
+    (data_dir / f"{name}.pak").write_bytes(b"pak")
+    updated, _, _ = import_mod(config, state, source, game_id="kcd2")
+    return updated
+
+
+def test_mod_subdir_deploy_kcd2_layout(
+    tmp_path: Path,
+) -> None:
+    config, game_target = _mod_subdir_config(tmp_path)
+    state = _add_kcd2_mod(config, State(), tmp_path, name="moda")
+    updated, outcome = deploy_game(config, state, "kcd2")
+    manifest = game_target / "moda" / "mod.manifest"
+    pak = game_target / "moda" / "Data" / "moda.pak"
+    assert manifest.is_symlink()
+    assert pak.is_symlink()
+    assert (
+        manifest.resolve()
+        == (config.library_root / "KCD2/Mods/moda/mod.manifest").resolve()
+    )
+    assert outcome.links_created == 2
+    assert len(updated.mods[0].deployed_links) == 2
+
+
+def test_mod_subdir_two_mods_no_manifest_collision(
+    tmp_path: Path,
+) -> None:
+    config, game_target = _mod_subdir_config(tmp_path)
+    state = _add_kcd2_mod(config, State(), tmp_path, name="moda")
+    state = _add_kcd2_mod(config, state, tmp_path, name="modb")
+    updated, outcome = deploy_game(config, state, "kcd2")
+    assert outcome.conflicts == []
+    assert (game_target / "moda" / "mod.manifest").is_symlink()
+    assert (game_target / "modb" / "mod.manifest").is_symlink()
+    assert len(updated.mods) == 2
+
+
+def test_flat_deploy_loose_pak(
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    paks_target = tmp_path / "game" / "Phoenix" / "Content" / "Paks"
+    paks_target.mkdir(parents=True)
+    config = add_game_profile(
+        Config(library_root=library_root),
+        "hogwarts",
+        nexus_domain="hogwartslegacy",
+        targets=[paks_target],
+        deploy_layout="flat",
+    )
+    source = tmp_path / "incoming" / "broom"
+    source.mkdir(parents=True)
+    (source / "zBroom_P.pak").write_bytes(b"pak")
+    updated, record, _ = import_mod(config, State(), source, game_id="hogwarts")
+    deploy_game(config, updated, "hogwarts")
+    link = paks_target / "zBroom_P.pak"
+    assert link.is_symlink()
+    assert link.resolve() == (record.source_path / "zBroom_P.pak").resolve()
+
+
+def test_mirror_deploy_preserves_game_relative_paths(
+    tmp_path: Path,
+) -> None:
+    library_root = tmp_path / "library"
+    library_root.mkdir()
+    game_root = tmp_path / "game" / "OblivionRemastered"
+    game_root.mkdir(parents=True)
+    config = add_game_profile(
+        Config(library_root=library_root),
+        "oblivion",
+        nexus_domain="oblivionremastered",
+        targets=[game_root],
+        deploy_layout="mirror",
+    )
+    source = tmp_path / "incoming" / "betterhud"
+    pak_dir = source / "Content" / "Paks" / "~mods"
+    pak_dir.mkdir(parents=True)
+    (pak_dir / "000_BetterHUD_P.pak").write_bytes(b"pak")
+    updated, record, _ = import_mod(config, State(), source, game_id="oblivion")
+    deploy_game(config, updated, "oblivion")
+    link = game_root / "Content" / "Paks" / "~mods" / "000_BetterHUD_P.pak"
+    assert link.is_symlink()
+    assert (
+        link.resolve()
+        == (
+            record.source_path / "Content" / "Paks" / "~mods" / "000_BetterHUD_P.pak"
+        ).resolve()
+    )
+
+
+def test_resolve_link_path_mod_subdir(
+    tmp_path: Path,
+) -> None:
+    profile = GameProfile(
+        nexus_domain="kcd",
+        targets=[tmp_path / "Mods"],
+        deploy_layout="mod_subdir",
+    )
+    mod = ModRecord(name="moda", game="kcd2", source_path=tmp_path / "src")
+    source_root = tmp_path / "src"
+    source_file = source_root / "mod.manifest"
+    link = resolve_link_path(
+        profile,
+        mod,
+        tmp_path / "Mods",
+        source_file,
+        source_root,
+    )
+    assert link == tmp_path / "Mods" / "moda" / "mod.manifest"

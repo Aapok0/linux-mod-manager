@@ -22,7 +22,7 @@ Nexus Mods version-update checking.
 - Interface: CLI subcommands, binary name `lmm`.
 - Deployment: symlinks, stow-like, every created link recorded so removal is exact and safe.
 - Nexus: free account, check-only. No downloads via API. Local state file is the source of truth and works offline.
-- Games: config-driven per-game profiles. Each game has a **default deploy target** (`targets[0]`) and **default library subpath**; per-mod `target` overrides deploy dir for exceptions only. Proton/Wine prefix mapping is deferred.
+- Games: config-driven per-game profiles. Each game has a **default deploy target** (`targets[0]`), **deploy layout** (`flat`, `mod_subdir`, or `mirror`), and **default library subpath**; per-mod `target` overrides deploy dir for exceptions only. Proton/Wine prefix mapping is deferred.
 
 ## When working in this project
 
@@ -53,7 +53,7 @@ Global options: `--config PATH`, `--dry-run`, `--json`, `--verbose`.
 
 | Command | Purpose |
 |---------|---------|
-| `lmm game add <id> --domain <nexus_domain> --target <path> [--target ...] [--library-subpath PATH]` | Register a game profile; first `--target` is the default deploy dir |
+| `lmm game add <id> --domain <nexus_domain> --target <path> [--target ...] [--library-subpath PATH] [--deploy-layout flat\|mod_subdir\|mirror]` | Register a game profile; first `--target` is the default deploy dir |
 | `lmm game list` | List configured game profiles |
 | `lmm game target add <id> --target <path> [--target ...]` | Append deploy target(s) to an existing game profile |
 | `lmm game target list <id>` | List deploy targets with indices for `--target-index` |
@@ -83,6 +83,7 @@ Conventions: a mod is referenced by its `name` (unique within a game) or `game/n
 
 - Never write into a game directory except as a symlink recorded in state.
 - `undeploy` must only remove links present in `deployed_links`; never delete real game files.
+- CryEngine / per-mod-folder games (KCD1, KCD2, Stalker 2) require `deploy_layout = "mod_subdir"`.
 - Detect conflicts before linking: if a target path exists and is not an lmm-owned symlink, abort that link and report it.
 - Nexus API key comes from `NEXUS_API_KEY` env or `config.toml`; never log or commit it.
 - `library_root` comes from `LMM_LIBRARY_ROOT` env or `config.toml`; set before first `game add` if not using the default.
