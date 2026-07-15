@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from tests.fixtures.nexus import FailingFirstMd5Client, HappyNexusClient
 from typer.testing import CliRunner
 
+from fixtures.nexus import FailingFirstMd5Client, HappyNexusClient
 from lmm.cli import app
 from lmm.state import StateStore
 

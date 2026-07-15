@@ -6,8 +6,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from tests.fixtures.nexus import FakeNexusClient
 
+from fixtures.nexus import FakeNexusClient
 from lmm.config import Config, ConfigError, add_game_profile
 from lmm.library import import_mod
 from lmm.nexus.updates import (
