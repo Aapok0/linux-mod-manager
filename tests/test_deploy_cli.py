@@ -6,6 +6,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+from helpers import plain_cli_output
 from lmm.cli import app
 from lmm.state import StateStore
 
@@ -296,6 +297,8 @@ def test_cli_add_rejects_target_index_and_path(
             "--target-path",
             "/tmp/custom",
         ],
+        color=False,
     )
-    assert result.exit_code != 0
-    assert "Use only one of --target-index or --target-path" in result.output
+    assert result.exit_code == 2
+    output = plain_cli_output(result.output)
+    assert "Use only one of --target-index or --target-path" in output
