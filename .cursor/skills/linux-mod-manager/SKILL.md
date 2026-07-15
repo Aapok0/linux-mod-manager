@@ -58,7 +58,7 @@ Global options: `--config PATH`, `--dry-run`, `--json`, `--verbose`.
 | `lmm game target add <id> --target <path> [--target ...]` | Append deploy target(s) to an existing game profile |
 | `lmm game target list <id>` | List deploy targets with indices for `--target-index` |
 | `lmm game target remove <id> --index <n> [--index ...]` | Remove secondary deploy target(s); index 0 cannot be removed |
-| `lmm add <name_or_path> --game <id> [--mod-id N] [--name NAME] [--move] [--target-index N \| --target-path PATH]` | Import/register a mod; bare name resolves under game's library dir (P2) |
+| `lmm add <name_or_path> --game <id> [--mod-id N] [--name NAME] [--move] [--all] [--target-index N \| --target-path PATH]` | Import/register a mod; bare name resolves under game's library dir (P2); `--all` imports each immediate subdirectory from a staging dir |
 | `lmm list [game]` | List mods (name, game, version, enabled, deployed) |
 | `lmm enable <mod>` / `lmm disable <mod>` | Toggle whether a mod deploys (run `deploy` afterward to apply) |
 | `lmm deploy <game>` | Reconcile game dir: remove disabled mods' links, symlink enabled mods |

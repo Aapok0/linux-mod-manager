@@ -10,7 +10,9 @@ from lmm.config import Config, add_game_profile
 from lmm.library import (
     ImportAction,
     LibraryError,
+    discover_mod_dirs,
     import_mod,
+    import_mods_from_directory,
     list_mods,
     mod_is_deployed,
     resolve_mod_source,
@@ -182,3 +184,148 @@ def test_list_mods_all_games_sorted(
     all_mods = list_mods(state, game_id=None)
     assert len(all_mods) == 2
     assert [mod.game for mod in all_mods] == ["kcd2", "other"]
+
+
+def _staging_dir(tmp_path: Path, *mod_names: str) -> Path:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    for mod_name in mod_names:
+        mod_dir = staging / mod_name
+        mod_dir.mkdir()
+        (mod_dir / "mod.txt").write_text(mod_name, encoding="utf-8")
+    return staging
+
+
+def test_discover_mod_dirs_excludes_hidden(
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "moda").mkdir()
+    (staging / ".hidden").mkdir()
+    assert discover_mod_dirs(staging) == [staging / "moda"]
+
+
+def test_import_mods_from_directory_imports_children(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    staging = _staging_dir(tmp_path, "moda", "modb")
+    updated, results, failures, skips = import_mods_from_directory(
+        config_with_game,
+        State(),
+        staging,
+        "kcd2",
+    )
+    assert failures == []
+    assert skips == []
+    assert len(results) == 2
+    assert {item.record.name for item in results} == {"moda", "modb"}
+    assert len(updated.mods) == 2
+
+
+def test_import_mods_from_directory_skips_files_and_hidden(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "moda").mkdir()
+    (staging / "archive.zip").write_text("zip", encoding="utf-8")
+    (staging / ".hidden").mkdir()
+    _, results, failures, skips = import_mods_from_directory(
+        config_with_game,
+        State(),
+        staging,
+        "kcd2",
+    )
+    assert failures == []
+    assert len(results) == 1
+    assert results[0].record.name == "moda"
+    assert len(skips) == 2
+    assert {item.reason for item in skips} == {"not_a_directory", "hidden"}
+
+
+def test_import_mods_from_directory_skips_already_registered(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    staging = _staging_dir(tmp_path, "moda", "modb")
+    state, _, _ = import_mod(
+        config_with_game,
+        State(),
+        staging / "moda",
+        game_id="kcd2",
+    )
+    updated, results, failures, skips = import_mods_from_directory(
+        config_with_game,
+        state,
+        staging,
+        "kcd2",
+    )
+    assert failures == []
+    assert len(results) == 1
+    assert results[0].record.name == "modb"
+    assert len(skips) == 1
+    assert skips[0].reason == "already_registered"
+    assert len(updated.mods) == 2
+
+
+def test_import_mods_from_directory_continues_after_failure(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    staging = _staging_dir(tmp_path, "moda", "modb")
+    existing = config_with_game.library_root / "KingdomComeDeliverance2/Mods" / "moda"
+    existing.mkdir(parents=True)
+    updated, results, failures, skips = import_mods_from_directory(
+        config_with_game,
+        State(),
+        staging,
+        "kcd2",
+    )
+    assert skips == []
+    assert len(failures) == 1
+    assert failures[0].name == "moda"
+    assert len(results) == 1
+    assert results[0].record.name == "modb"
+    assert len(updated.mods) == 1
+
+
+def test_import_mods_from_directory_dry_run(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    staging = _staging_dir(tmp_path, "moda", "modb")
+    state = State()
+    updated, results, failures, skips = import_mods_from_directory(
+        config_with_game,
+        state,
+        staging,
+        "kcd2",
+        dry_run=True,
+    )
+    assert updated is state
+    assert len(results) == 2
+    assert failures == []
+    assert not (
+        config_with_game.library_root / "KingdomComeDeliverance2/Mods/moda"
+    ).exists()
+    assert staging / "moda" in discover_mod_dirs(staging)
+
+
+def test_import_mods_from_directory_move(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    staging = _staging_dir(tmp_path, "moda")
+    updated, results, _, _ = import_mods_from_directory(
+        config_with_game,
+        State(),
+        staging,
+        "kcd2",
+        copy=False,
+    )
+    assert results[0].action == ImportAction.MOVED
+    assert not (staging / "moda").exists()
+    assert updated.mods[0].source_path.exists()

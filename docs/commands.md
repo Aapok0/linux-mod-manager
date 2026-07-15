@@ -86,12 +86,16 @@ Import or register a mod directory.
 | `--target-index` | no | Deploy to `targets[n]` instead of default |
 | `--target-path` | no | Deploy to an absolute path instead of default |
 | `--move` | no | Move mod tree into library instead of copying (outside library only) |
+| `--all` | no | Import each immediate subdirectory as a separate mod |
 
-Use only one of `--target-index` or `--target-path`.
+Use only one of `--target-index` or `--target-path`. With `--all`, do not pass `--name`, `--mod-id`, or target overrides.
+
+When `--all` is set, each immediate child **directory** becomes a mod (name = directory name). Top-level **files** (archives, readme) are skipped. Already-registered mods are skipped. Exits **1** only when an import fails (skips are reported but non-fatal). Honors `--dry-run` and `--json`.
 
 ```bash
 lmm add /path/to/mod --game kcd2
 lmm add easysharpening --game kcd2   # when already in library
+lmm add ~/Downloads/kcd2-batch --game kcd2 --all
 ```
 
 ### `lmm list [game]`
