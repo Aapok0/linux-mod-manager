@@ -39,6 +39,25 @@ def test_config_round_trip(tmp_path: Path) -> None:
     assert loaded.games["kcd2"].library_subpath == "KingdomComeDeliverance2/Mods"
 
 
+def test_deploy_layout_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    store = ConfigStore(path)
+    config = Config(
+        games={
+            "kcd2": GameProfile(
+                nexus_domain="kingdomcomedeliverance2",
+                targets=[Path("/tmp/game/Mods")],
+                deploy_layout="mod_subdir",
+            )
+        },
+    )
+    store.save(config)
+    loaded = store.load()
+    assert loaded.games["kcd2"].deploy_layout == "mod_subdir"
+    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+    assert raw["games"]["kcd2"]["deploy_layout"] == "mod_subdir"
+
+
 def test_api_key_prefers_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = ConfigStore(tmp_path / "config.toml")
     config = Config(nexus_api_key="file-key")

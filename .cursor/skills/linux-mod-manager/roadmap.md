@@ -35,7 +35,8 @@ Register the default deploy dir once on `game add`:
 ```bash
 lmm game add kcd2 --domain kingdomcomedeliverance2 \
   --target "/path/to/game/Mods" \
-  --library-subpath "KingdomComeDeliverance2/Mods"
+  --library-subpath "KingdomComeDeliverance2/Mods" \
+  --deploy-layout mod_subdir
 ```
 
 Add extra deploy dirs only when a game needs them (e.g. Oblivion pak + binaries). Most mods never need `--target-index` or `--target-path`.
@@ -56,7 +57,7 @@ lmm game target list oblivion
 - [x] Record `deployed_links` (and created dirs) in state; `undeploy` removes only recorded links.
 
 Acceptance:
-- `lmm deploy kcd2` symlinks all enabled mods into `targets[0]`; no per-mod target needed for the common case.
+- `lmm deploy kcd2` symlinks enabled mods into `targets[0]` using `deploy_layout` (KCD2 requires `mod_subdir`: `Mods/<modname>/...`); no per-mod target needed for the common case.
 - A mod with `--target-index 1` or `--target-path` deploys only to that override; other mods still use the default.
 - `lmm add easysharpening --game kcd2` works when `library_root/.../easysharpening` already exists.
 - `lmm undeploy kcd2` removes exactly those links and any lmm-created empty dirs; no real game files touched.

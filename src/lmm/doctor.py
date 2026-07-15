@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from lmm.config import ConfigError, ConfigStore
+from lmm.deploy import DeployError, resolve_deploy_target
 from lmm.library import mod_is_deployed
 from lmm.state import StateStore
 
@@ -124,6 +125,48 @@ def run_doctor(
                     ),
                 ),
             )
+
+        profile = config.games.get(mod.game)
+        if profile is None:
+            continue
+
+        if profile.deploy_layout == "mod_subdir" and mod.deployed_links:
+            try:
+                deploy_target = resolve_deploy_target(config, mod)
+            except DeployError:
+                continue
+            for deployed in mod.deployed_links:
+                link_path = deployed.link
+                if link_path.parent.resolve() == deploy_target.resolve():
+                    checks.append(
+                        DoctorCheck(
+                            name=f"mod.{mod.game}/{mod.name}.layout",
+                            status="warning",
+                            message=(
+                                f"Mod {mod.game}/{mod.name} has links directly under "
+                                f"{deploy_target} but deploy_layout is mod_subdir "
+                                f"(expected {deploy_target / mod.name}/...); "
+                                f"run 'lmm undeploy {mod.game} --yes' then "
+                                f"'lmm deploy {mod.game}'"
+                            ),
+                        ),
+                    )
+                    break
+
+        if profile.deploy_layout == "mirror" and mod.source_path.is_dir():
+            has_subdir = any(entry.is_dir() for entry in mod.source_path.iterdir())
+            if not has_subdir:
+                checks.append(
+                    DoctorCheck(
+                        name=f"mod.{mod.game}/{mod.name}.layout",
+                        status="warning",
+                        message=(
+                            f"Mod {mod.game}/{mod.name} source has no subdirectories; "
+                            f"mirror layout expects game-relative paths inside the "
+                            f"mod folder (e.g. Content/Paks/~mods/...)"
+                        ),
+                    ),
+                )
 
     api_key = config_store.resolve_api_key(config)
     if api_key:

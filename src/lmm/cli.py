@@ -18,6 +18,7 @@ from lmm import __version__
 from lmm.config import (
     ConfigError,
     ConfigStore,
+    DeployLayout,
     add_game_profile,
     add_game_target,
     remove_game_target,
@@ -263,6 +264,13 @@ def game_add(
             help="Subpath under library_root for this game's mods (default: game id)",
         ),
     ] = None,
+    deploy_layout: Annotated[
+        DeployLayout,
+        typer.Option(
+            "--deploy-layout",
+            help="How mod files map into deploy targets (flat, mod_subdir, mirror)",
+        ),
+    ] = "flat",
 ) -> None:
     """Register a game profile."""
     if not target:
@@ -279,6 +287,7 @@ def game_add(
                 nexus_domain=domain,
                 targets=target,
                 library_subpath=library_subpath,
+                deploy_layout=deploy_layout,
             )
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
@@ -313,6 +322,7 @@ def game_list(ctx: typer.Context) -> None:
         table = Table(title="Game profiles")
         table.add_column("ID")
         table.add_column("Nexus domain")
+        table.add_column("Deploy layout")
         table.add_column("Targets")
         table.add_column("Library subpath")
         for game_id, profile in sorted(config.games.items()):
@@ -322,6 +332,7 @@ def game_list(ctx: typer.Context) -> None:
             table.add_row(
                 game_id,
                 profile.nexus_domain,
+                profile.deploy_layout,
                 targets,
                 profile.library_subpath or "",
             )

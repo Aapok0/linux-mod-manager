@@ -21,6 +21,7 @@ from lmm.paths import (
 
 CURRENT_SCHEMA_VERSION = 1
 DeployMethod = Literal["symlink"]
+DeployLayout = Literal["flat", "mod_subdir", "mirror"]
 
 
 class ConfigError(Exception):
@@ -31,6 +32,7 @@ class GameProfile(BaseModel):
     nexus_domain: str
     targets: list[Path]
     deploy_method: DeployMethod = "symlink"
+    deploy_layout: DeployLayout = "flat"
     library_subpath: str | None = None
 
     @field_validator("targets", mode="before")
@@ -156,6 +158,7 @@ def _config_to_toml(payload: dict[str, Any]) -> dict[str, Any]:
             "nexus_domain": profile["nexus_domain"],
             "targets": [str(path) for path in profile["targets"]],
             "deploy_method": profile["deploy_method"],
+            "deploy_layout": profile["deploy_layout"],
         }
         if profile.get("library_subpath"):
             games[game_id]["library_subpath"] = profile["library_subpath"]
@@ -171,6 +174,7 @@ def add_game_profile(
     nexus_domain: str,
     targets: list[Path],
     deploy_method: DeployMethod = "symlink",
+    deploy_layout: DeployLayout = "flat",
     library_subpath: str | None = None,
 ) -> Config:
     if game_id in config.games:
@@ -187,6 +191,7 @@ def add_game_profile(
         nexus_domain=nexus_domain,
         targets=targets,
         deploy_method=deploy_method,
+        deploy_layout=deploy_layout,
         library_subpath=library_subpath,
     )
     return updated

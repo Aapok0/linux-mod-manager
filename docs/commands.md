@@ -39,17 +39,29 @@ Register a new game profile.
 | `--domain` | yes | Nexus game domain (e.g. `kingdomcomedeliverance2`) |
 | `--target` | yes | Deploy target path; repeat for multiple. First is the default |
 | `--library-subpath` | no | Subpath under `library_root` (default: game id) |
+| `--deploy-layout` | no | How mod files map into deploy targets: `flat`, `mod_subdir`, or `mirror` (default: `flat`) |
 
 ```bash
 lmm game add kcd2 \
   --domain kingdomcomedeliverance2 \
   --target "/path/to/game/Mods" \
-  --library-subpath "KingdomComeDeliverance2/Mods"
+  --library-subpath "KingdomComeDeliverance2/Mods" \
+  --deploy-layout mod_subdir
 ```
+
+**Deploy layouts:**
+
+| Layout | Use when |
+|--------|----------|
+| `flat` | Mod files land directly in the deploy folder (loose paks, single-layer mods) |
+| `mod_subdir` | Game expects one subdirectory per mod (`Mods/<name>/`, `~mods/<folder>/`) |
+| `mirror` | Mod source tree mirrors game-relative paths; deploy target is the game install root |
+
+See [README — Deploy layouts](../README.md#deploy-layouts) for per-game recipes (KCD2, Stalker 2, Oblivion, Hogwarts Legacy).
 
 ### `lmm game list`
 
-List all configured game profiles (id, Nexus domain, deploy targets, library subpath).
+List all configured game profiles (id, Nexus domain, deploy layout, deploy targets, library subpath).
 
 ---
 
@@ -136,7 +148,7 @@ Unregister a mod from state and remove its deployed symlinks. Library files are 
 
 ### `lmm doctor`
 
-Validate config, library paths, deploy targets, and mod sources. Exits **1** on errors. Use before first deploy to catch setup issues.
+Validate config, library paths, deploy targets, mod sources, and deploy layout consistency. Warns when `mod_subdir` games have links deployed flat (run `undeploy` then `deploy` after fixing config). Warns when `mirror` mods have no subdirectories in their source tree. Exits **1** on errors. Use before first deploy to catch setup issues.
 
 ### `lmm enable <mod>`
 

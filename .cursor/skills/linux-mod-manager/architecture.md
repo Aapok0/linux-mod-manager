@@ -31,14 +31,15 @@ nexus_domain = "kingdomcomedeliverance2"
 targets = ["/home/user/Games/SteamLibrary/steamapps/common/KingdomComeDeliverance2/Mods"]
 library_subpath = "KingdomComeDeliverance2/Mods"
 deploy_method = "symlink"
+deploy_layout = "mod_subdir"
 
 [games.oblivionremastered]
 nexus_domain = "oblivionremastered"
 targets = [
-  "/home/aapoko/Games/SteamLibrary/steamapps/common/Oblivion Remastered/OblivionRemastered/Content/Paks/~mods",
-  "/home/aapoko/Games/SteamLibrary/steamapps/common/Oblivion Remastered/OblivionRemastered/Binaries/Win64",
+  "/home/aapoko/Games/SteamLibrary/steamapps/common/Oblivion Remastered/OblivionRemastered",
 ]
 deploy_method = "symlink"
+deploy_layout = "mirror"
 ```
 
 Notes:
@@ -47,6 +48,7 @@ Notes:
 - **`targets[0]` is the default deploy directory** for the game. Set on `game add`; add more later with `game target add`. Most mods deploy to `targets[0]` without any per-mod setting.
 - Additional `targets` entries (index 1, 2, …) exist for the few mods that need a different game directory. Override via `ModRecord.target`.
 - **`library_subpath`** is the default library directory for the game's mods under `library_root`.
+- **`deploy_layout`** controls how mod source paths map to deploy targets (see below). Default `flat` for backward compatibility.
 - Paths may contain spaces; always quote/escape and use `pathlib.Path`, never shell string concatenation.
 - `game_id`, mod `name`, and `library_subpath` are validated: no `/`, `\`, `..`, or empty segments. Resolved paths must stay under `library_root`.
 - In-library imports must live under that game's `game_library_dir`; registering a mod from another game's folder is rejected.
@@ -116,7 +118,10 @@ Rules:
   1. `mod.target` is `null` → `profile.targets[0]` (default; common case).
   2. `mod.target` is int `n` → `profile.targets[n]` (bounds-checked).
   3. `mod.target` is str → use as absolute deploy path (exception mods).
-- For each file under the mod source, compute the relative path and link it at `deploy_target/relpath`.
+- For each file under the mod source, compute the link path via `resolve_link_path(profile, mod, deploy_target, source_file, source_root)`:
+  - **`flat`** / **`mirror`**: `deploy_target / relpath` (mod source relative path).
+  - **`mod_subdir`**: `deploy_target / mod.name / relpath` (one subdirectory per mod; required for KCD2, Stalker 2).
+- `mirror` uses the same path math as `flat`; the difference is convention: deploy target is the game install root and mod sources contain game-relative prefixes (e.g. `Content/Paks/~mods/...`). Doctor validates mirror mods have nested source paths.
 - Create parent dirs as real directories when needed (record created dirs so empty ones can be cleaned on undeploy). Prefer file-level links so multiple mods can share a directory.
 - Conflict detection before creating any link:
   - Path free -> create link, record it.

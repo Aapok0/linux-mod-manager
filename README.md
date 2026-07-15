@@ -63,10 +63,11 @@ Run `lmm doctor` after setup to validate paths and config.
 lmm game add kcd2 \
   --domain kingdomcomedeliverance2 \
   --target "/path/to/KingdomComeDeliverance2/Mods" \
-  --library-subpath "KingdomComeDeliverance2/Mods"
+  --library-subpath "KingdomComeDeliverance2/Mods" \
+  --deploy-layout mod_subdir
 ```
 
-`--target` is the default deploy directory (where symlinks land). `--library-subpath` is where mods are stored under your library root.
+`--target` is the default deploy directory (where symlinks land). `--library-subpath` is where mods are stored under your library root. **`--deploy-layout mod_subdir`** is required for KCD2 — each mod must deploy into `Mods/<modname>/`, not flat into `Mods/`. See [Deploy layouts](#deploy-layouts).
 
 ### 3. Add a mod
 
@@ -119,6 +120,59 @@ Shows installed version, latest Nexus version, and update status after `check`.
 
 Full command reference: [docs/commands.md](docs/commands.md)
 
+## Deploy layouts
+
+Games expect mods in different on-disk shapes. Set `deploy_layout` on each game profile (via `--deploy-layout` on `game add` or in `config.toml`).
+
+| Layout | Link path | Deploy target should be | Example games |
+|--------|-----------|-------------------------|---------------|
+| `flat` (default) | `target / file` | Folder mods merge into | Hogwarts Legacy (loose `.pak` in Paks dir) |
+| `mod_subdir` | `target / modname / file` | Mod container dir | KCD1, KCD2, Stalker 2 |
+| `mirror` | `target / file` (mod tree includes game-relative paths) | Game install root | Oblivion Remastered (multi-path mods) |
+
+### Game layout recipes
+
+**Kingdom Come Deliverance 2** (CryEngine — one folder per mod):
+
+```bash
+lmm game add kcd2 \
+  --domain kingdomcomedeliverance2 \
+  --target "/path/to/KingdomComeDeliverance2/Mods" \
+  --library-subpath "KingdomComeDeliverance2/Mods" \
+  --deploy-layout mod_subdir
+```
+
+**S.T.A.L.K.E.R. 2** (UE — folder per mod under `~mods`):
+
+```bash
+lmm game add stalker2 \
+  --domain stalker2heartofchornobyl \
+  --target "/path/to/Stalker2/Content/Paks/~mods" \
+  --library-subpath "Stalker2/Content/Paks/~mods" \
+  --deploy-layout mod_subdir
+```
+
+**Oblivion Remastered** (multi-path — paks, ESPs, DLLs in one mod tree):
+
+```bash
+lmm game add oblivionremastered \
+  --domain oblivionremastered \
+  --target "/path/to/Oblivion Remastered/OblivionRemastered" \
+  --library-subpath "OblivionRemastered/OblivionRemastered" \
+  --deploy-layout mirror
+```
+
+Import mods with their game-relative directory structure intact (e.g. `Content/Paks/~mods/...`). Use `game target add` for exception mods that need a different root.
+
+**Hogwarts Legacy** (loose pak files):
+
+```bash
+lmm game add hogwartslegacy \
+  --domain hogwartslegacy \
+  --target "/path/to/Hogwarts Legacy/Phoenix/Content/Paks" \
+  --deploy-layout flat
+```
+
 ## Configuration
 
 ### File locations
@@ -145,6 +199,7 @@ nexus_api_key = ""
 nexus_domain = "kingdomcomedeliverance2"
 targets = ["/path/to/game/Mods"]
 deploy_method = "symlink"
+deploy_layout = "mod_subdir"
 library_subpath = "KingdomComeDeliverance2/Mods"
 ```
 
@@ -156,6 +211,7 @@ library_subpath = "KingdomComeDeliverance2/Mods"
 | `games.<id>.nexus_domain` | — (required) | Nexus domain name for API calls |
 | `games.<id>.targets` | — (required) | Deploy directories; `[0]` is the default |
 | `games.<id>.deploy_method` | `"symlink"` | Deployment method (only `symlink` today) |
+| `games.<id>.deploy_layout` | `"flat"` | How mod files map into deploy targets (`flat`, `mod_subdir`, `mirror`) |
 | `games.<id>.library_subpath` | `null` | Subpath under `library_root`; defaults to game id |
 
 ### `state.json`

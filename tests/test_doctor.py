@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from lmm.cli import app
 from lmm.config import Config, ConfigStore, add_game_profile
 from lmm.doctor import doctor_has_errors, run_doctor
-from lmm.state import ModRecord, State, StateStore
+from lmm.state import DeployedLink, ModRecord, State, StateStore
 
 
 def _stores(
@@ -148,6 +148,76 @@ def test_doctor_missing_api_key(
     key_check = _check_by_name(checks, "nexus_api_key")
     assert key_check.status == "info"
     assert "not set" in key_check.message.lower()
+
+
+def test_doctor_mod_subdir_flat_deploy_warning(tmp_path: Path) -> None:
+    library_root = tmp_path / "library"
+    library_root.mkdir(exist_ok=True)
+    game_target = tmp_path / "game" / "Mods"
+    game_target.mkdir(parents=True)
+    config = add_game_profile(
+        Config(library_root=library_root),
+        "kcd2",
+        nexus_domain="kcd",
+        targets=[game_target],
+        deploy_layout="mod_subdir",
+    )
+    source = library_root / "KCD2" / "Mods" / "moda"
+    source.mkdir(parents=True)
+    (source / "mod.manifest").write_text("<kcd_mod/>", encoding="utf-8")
+    manifest = game_target / "mod.manifest"
+    manifest.symlink_to(source / "mod.manifest")
+    state = State(
+        mods=[
+            ModRecord(
+                name="moda",
+                game="kcd2",
+                source_path=source,
+                deployed_links=[
+                    DeployedLink(
+                        link=manifest,
+                        source=source / "mod.manifest",
+                    )
+                ],
+            )
+        ]
+    )
+    config_store, state_store = _stores(tmp_path, config=config, state=state)
+    checks = run_doctor(config_store, state_store)
+    layout = _check_by_name(checks, "mod.kcd2/moda.layout")
+    assert layout.status == "warning"
+    assert "mod_subdir" in layout.message
+
+
+def test_doctor_mirror_flat_source_warning(tmp_path: Path) -> None:
+    library_root = tmp_path / "library"
+    library_root.mkdir(exist_ok=True)
+    game_root = tmp_path / "game" / "OblivionRemastered"
+    game_root.mkdir(parents=True)
+    config = add_game_profile(
+        Config(library_root=library_root),
+        "oblivion",
+        nexus_domain="oblivionremastered",
+        targets=[game_root],
+        deploy_layout="mirror",
+    )
+    source = library_root / "oblivion" / "flatmod"
+    source.mkdir(parents=True)
+    (source / "mod.pak").write_bytes(b"pak")
+    state = State(
+        mods=[
+            ModRecord(
+                name="flatmod",
+                game="oblivion",
+                source_path=source,
+            )
+        ]
+    )
+    config_store, state_store = _stores(tmp_path, config=config, state=state)
+    checks = run_doctor(config_store, state_store)
+    layout = _check_by_name(checks, "mod.oblivion/flatmod.layout")
+    assert layout.status == "warning"
+    assert "mirror layout" in layout.message
 
 
 @pytest.mark.integration
