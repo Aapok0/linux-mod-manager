@@ -37,4 +37,4 @@ jobs:
         run: ty check src
 
       - name: Pytest
-        run: pytest
+        run: pytest --cov=src/lmm --cov-report=term-missing

@@ -10,6 +10,7 @@ from lmm.config import Config, add_game_profile
 from lmm.library import LibraryError, import_mod
 from lmm.paths import (
     PathValidationError,
+    path_within_root,
     resolve_under_root,
     validate_path_segment,
     validate_relative_subpath,
@@ -17,16 +18,42 @@ from lmm.paths import (
 from lmm.state import State
 
 
-def test_validate_path_segment_rejects_traversal() -> None:
+@pytest.mark.parametrize(
+    ("value", "field"),
+    [
+        ("..", "mod name"),
+        ("../escape", "mod name"),
+        ("", "segment"),
+        (".", "segment"),
+    ],
+)
+def test_validate_path_segment_rejects_invalid(value: str, field: str) -> None:
     with pytest.raises(PathValidationError):
-        validate_path_segment("..", field="mod name")
-    with pytest.raises(PathValidationError):
-        validate_path_segment("../escape", field="mod name")
+        validate_path_segment(value, field=field)
 
 
-def test_validate_relative_subpath_rejects_absolute() -> None:
+@pytest.mark.parametrize(
+    "subpath",
+    ["", "/etc/passwd", "../escape"],
+)
+def test_validate_relative_subpath_rejects_invalid(subpath: str) -> None:
     with pytest.raises(PathValidationError):
-        validate_relative_subpath("/etc/passwd", field="library_subpath")
+        validate_relative_subpath(subpath, field="library_subpath")
+
+
+def test_path_within_root_positive(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    child = root / "KCD2" / "Mods" / "moda"
+    child.mkdir(parents=True)
+    assert path_within_root(child, root) is True
+
+
+def test_path_within_root_negative(tmp_path: Path) -> None:
+    root = tmp_path / "library"
+    root.mkdir()
+    sibling = tmp_path / "outside"
+    sibling.mkdir()
+    assert path_within_root(sibling, root) is False
 
 
 def test_resolve_under_root_rejects_escape(tmp_path: Path) -> None:

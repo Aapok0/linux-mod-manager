@@ -15,6 +15,7 @@ from lmm.state import (
     add_mod_record,
     find_mod,
     remove_mod_record,
+    set_mod_enabled,
 )
 
 
@@ -120,3 +121,34 @@ def test_saved_json_has_schema_version(tmp_path: Path) -> None:
     StateStore(path).save(State())
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert raw["schema_version"] == 1
+
+
+def test_set_mod_enabled_toggles() -> None:
+    state = State(
+        mods=[ModRecord(name="foo", game="kcd2", source_path=Path("/tmp/foo"))]
+    )
+    disabled, record = set_mod_enabled(state, "foo", enabled=False, default_game="kcd2")
+    assert record.enabled is False
+    enabled, record = set_mod_enabled(
+        disabled, "foo", enabled=True, default_game="kcd2"
+    )
+    assert record.enabled is True
+    again, record = set_mod_enabled(enabled, "foo", enabled=True, default_game="kcd2")
+    assert again.mods[0].enabled is True
+
+
+def test_malformed_mod_record_raises_state_error(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps({"schema_version": 1, "mods": [{"name": "x"}]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(StateError, match="Invalid state"):
+        StateStore(path).load()
+
+
+def test_unreadable_state_raises_state_error(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.mkdir()
+    with pytest.raises(StateError, match="Cannot read state"):
+        StateStore(path).load()
