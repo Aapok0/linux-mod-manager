@@ -2,74 +2,25 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from fixtures.nexus import FakeNexusClient
 from lmm.config import Config, ConfigError, add_game_profile
 from lmm.library import import_mod
-from lmm.nexus import NexusError
 from lmm.nexus.updates import (
     _pick_md5_match,
     _pick_primary_file,
     check_for_updates,
     identify_mods,
     is_newer_version,
+    plan_check,
     plan_identify,
     version_compare_used_fallback,
 )
 from lmm.state import State
-
-
-class FakeClient:
-    def __init__(
-        self,
-        *,
-        fail_first_md5: bool = False,
-        fail_mod_files_for: set[int] | None = None,
-    ) -> None:
-        self.md5_payload = [{"mod_id": 42, "file_id": 7, "version": "1.1.0"}]
-        self.updated_payload = [{"mod_id": 42}, {"mod_id": 43}]
-        self.files_payload = [
-            {
-                "file_id": 7,
-                "version": "1.2.0",
-                "category_name": "MAIN",
-                "uploaded_timestamp": 1000,
-            }
-        ]
-        self.fail_first_md5 = fail_first_md5
-        self.fail_mod_files_for = fail_mod_files_for or set()
-        self.md5_calls = 0
-        self.mod_files_calls: list[int] = []
-
-    def md5_search(self, _: str, md5_hash: str) -> list[dict]:
-        self.md5_calls += 1
-        if self.fail_first_md5 and self.md5_calls == 1:
-            msg = f"md5_search failed for {md5_hash}"
-            raise NexusError(msg)
-        mod_id = 42 if self.md5_calls == 1 else 43
-        return [{"mod_id": mod_id, "file_id": 7, "version": "1.1.0"}]
-
-    def updated_mods(self, _: str, *, period: str = "1w") -> list[dict]:
-        assert period == "1w"
-        return self.updated_payload
-
-    def mod_files(self, _: str, mod_id: int) -> list[dict]:
-        self.mod_files_calls.append(mod_id)
-        if mod_id in self.fail_mod_files_for:
-            msg = f"mod_files failed for {mod_id}"
-            raise NexusError(msg)
-        version = "1.2.0" if mod_id == 42 else "2.0.0"
-        return [
-            {
-                "file_id": 7,
-                "version": version,
-                "category_name": "MAIN",
-                "uploaded_timestamp": 1000,
-            }
-        ]
 
 
 def _setup_mod(tmp_path: Path, name: str = "moda") -> tuple[Config, State]:
@@ -102,7 +53,7 @@ def _add_mod(config: Config, state: State, tmp_path: Path, name: str) -> State:
 def test_identify_mods_updates_state(tmp_path: Path) -> None:
     config, state = _setup_mod(tmp_path)
     updated, results, failures, skips = identify_mods(
-        config, state, "kcd2", client=FakeClient()
+        config, state, "kcd2", client=FakeNexusClient()
     )
     assert len(results) == 1
     assert failures == []
@@ -125,7 +76,7 @@ def test_check_for_updates_marks_update_available(tmp_path: Path) -> None:
         }
     )
     updated, results, failures, version_fallback = check_for_updates(
-        config, seeded, "kcd2", client=FakeClient()
+        config, seeded, "kcd2", client=FakeNexusClient()
     )
     assert len(results) == 1
     assert failures == []
@@ -139,7 +90,7 @@ def test_identify_mods_continues_after_md5_failure(tmp_path: Path) -> None:
     config, state = _setup_mod(tmp_path, "moda")
     state = _add_mod(config, state, tmp_path, "modb")
 
-    client = FakeClient(fail_first_md5=True)
+    client = FakeNexusClient(fail_first_md5=True)
     updated, results, failures, skips = identify_mods(
         config, state, "kcd2", client=client
     )
@@ -169,7 +120,7 @@ def test_check_for_updates_continues_after_mod_files_failure(tmp_path: Path) -> 
         config,
         state,
         "kcd2",
-        client=FakeClient(fail_mod_files_for={42}),
+        client=FakeNexusClient(fail_mod_files_for={42}),
     )
 
     assert len(failures) == 1
@@ -185,13 +136,13 @@ def test_check_for_updates_continues_after_mod_files_failure(tmp_path: Path) -> 
 def test_identify_mods_unknown_game_raises_config_error(tmp_path: Path) -> None:
     config, state = _setup_mod(tmp_path)
     with pytest.raises(ConfigError, match="Unknown game profile"):
-        identify_mods(config, state, "bogus", client=FakeClient())
+        identify_mods(config, state, "bogus", client=FakeNexusClient())
 
 
 def test_check_for_updates_unknown_game_raises_config_error(tmp_path: Path) -> None:
     config, state = _setup_mod(tmp_path)
     with pytest.raises(ConfigError, match="Unknown game profile"):
-        check_for_updates(config, state, "bogus", client=FakeClient())
+        check_for_updates(config, state, "bogus", client=FakeNexusClient())
 
 
 def test_is_newer_version_semver_and_fallback() -> None:
@@ -206,7 +157,7 @@ def test_is_newer_version_semver_and_fallback() -> None:
 def test_identify_mods_reports_skip_when_no_nexus_match(tmp_path: Path) -> None:
     config, state = _setup_mod(tmp_path)
 
-    class EmptyClient(FakeClient):
+    class EmptyClient(FakeNexusClient):
         def md5_search(self, _: str, __: str) -> list[dict]:
             return []
 
@@ -245,7 +196,7 @@ def test_identify_mods_disambiguates_md5_matches_by_size(tmp_path: Path) -> None
     source = state.mods[0].source_path
     (source / "mod.pak").write_bytes(content)
 
-    class SizedClient(FakeClient):
+    class SizedClient(FakeNexusClient):
         def md5_search(self, _: str, __: str) -> list[dict]:
             return [
                 {"mod_id": 1, "file_details": {"size": 999}},
@@ -280,8 +231,79 @@ def test_check_for_updates_skips_fresh_mod_not_in_updated_set(tmp_path: Path) ->
             "last_checked": datetime.now(UTC),
         }
     )
-    client = FakeClient()
+    client = FakeNexusClient()
     client.updated_payload = []
     _, _, _, version_fallback = check_for_updates(config, seeded, "kcd2", client=client)
     assert version_fallback is False
     assert client.mod_files_calls == []
+
+
+def test_plan_check_includes_stale_mod(tmp_path: Path) -> None:
+    config, state = _setup_mod(tmp_path)
+    stale_time = datetime.now(UTC) - timedelta(hours=25)
+    state.mods[0] = state.mods[0].model_copy(
+        update={"nexus_mod_id": 42, "last_checked": stale_time}
+    )
+    planned = plan_check(config, state, "kcd2")
+    assert len(planned) == 1
+    assert planned[0].reason == "stale"
+
+
+def test_plan_check_skips_fresh_mod(tmp_path: Path) -> None:
+    config, state = _setup_mod(tmp_path)
+    state.mods[0] = state.mods[0].model_copy(
+        update={"nexus_mod_id": 42, "last_checked": datetime.now(UTC)}
+    )
+    planned = plan_check(config, state, "kcd2")
+    assert planned == []
+
+
+def test_plan_check_skips_mod_without_nexus_id(tmp_path: Path) -> None:
+    config, state = _setup_mod(tmp_path)
+    planned = plan_check(config, state, "kcd2")
+    assert planned == []
+
+
+def test_check_for_updates_marks_up_to_date_mod(tmp_path: Path) -> None:
+    config, state = _setup_mod(tmp_path)
+    seeded = state.model_copy(deep=True)
+    seeded.mods[0] = seeded.mods[0].model_copy(
+        update={
+            "nexus_mod_id": 42,
+            "installed_version": "1.2.0",
+            "last_checked": datetime(2020, 1, 1, tzinfo=UTC),
+        }
+    )
+
+    class UpToDateClient(FakeNexusClient):
+        def mod_files(self, _: str, mod_id: int) -> list[dict]:
+            return [
+                {
+                    "file_id": 7,
+                    "version": "1.2.0",
+                    "category_name": "MAIN",
+                    "uploaded_timestamp": 1000,
+                }
+            ]
+
+    updated, results, failures, _ = check_for_updates(
+        config, seeded, "kcd2", client=UpToDateClient()
+    )
+    assert failures == []
+    assert results == []
+    assert updated.mods[0].update_available is False
+
+
+@pytest.mark.parametrize(
+    ("installed", "latest", "expected"),
+    [
+        ("1.0", "1.0.0.0", True),
+        ("1.0.0", "1.0.1", True),
+        ("", "1.0.0", True),
+        ("1.0.0", "", False),
+    ],
+)
+def test_is_newer_version_edge_cases(
+    installed: str, latest: str, expected: bool
+) -> None:
+    assert is_newer_version(installed or None, latest or None) is expected

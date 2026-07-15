@@ -20,6 +20,7 @@ dependencies = [
 dev = [
     "pip-tools>=7.5,<8",
     "pytest>=9.1",
+    "pytest-cov>=6,<7",
     "ruff>=0.15,<0.16",
     "ty>=0.0.56,<0.1",
 ]
@@ -35,7 +36,11 @@ packages = ["lmm"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
+markers = [
+    "unit: pure function/service tests, no CliRunner",
+    "integration: CliRunner or multi-command CLI bootstrap",
+]
 
 [tool.ruff]
 target-version = "py311"

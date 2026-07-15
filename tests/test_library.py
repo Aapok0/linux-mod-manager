@@ -12,9 +12,10 @@ from lmm.library import (
     LibraryError,
     import_mod,
     list_mods,
+    mod_is_deployed,
     resolve_mod_source,
 )
-from lmm.state import State
+from lmm.state import DeployedLink, ModRecord, State
 
 
 @pytest.fixture
@@ -109,3 +110,75 @@ def test_resolve_mod_source_bare_name(config_with_game: Config) -> None:
     mod_dir.mkdir(parents=True)
     resolved = resolve_mod_source(config_with_game, "kcd2", Path("easysharpening"))
     assert resolved == mod_dir.resolve()
+
+
+def test_import_mod_move_removes_source(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "external" / "movable"
+    source.mkdir(parents=True)
+    (source / "mod.manifest").write_text("test", encoding="utf-8")
+    _, record, action = import_mod(
+        config_with_game,
+        State(),
+        source,
+        game_id="kcd2",
+        copy=False,
+    )
+    assert action == ImportAction.MOVED
+    assert not source.exists()
+    assert record.source_path.exists()
+
+
+def test_import_mod_destination_exists_raises(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "external" / "dup"
+    source.mkdir(parents=True)
+    existing = config_with_game.library_root / "KingdomComeDeliverance2/Mods" / "dup"
+    existing.mkdir(parents=True)
+    with pytest.raises(LibraryError, match="Destination already exists"):
+        import_mod(config_with_game, State(), source, game_id="kcd2", name="dup")
+
+
+def test_mod_is_deployed() -> None:
+    deployed = State(
+        mods=[
+            ModRecord(
+                name="a",
+                game="kcd2",
+                source_path=Path("/tmp/a"),
+                deployed_links=[
+                    DeployedLink(link=Path("/game/a.txt"), source=Path("/tmp/a.txt"))
+                ],
+            )
+        ]
+    ).mods[0]
+    not_deployed = State(
+        mods=[ModRecord(name="b", game="kcd2", source_path=Path("/tmp/b"))]
+    ).mods[0]
+    assert mod_is_deployed(deployed) is True
+    assert mod_is_deployed(not_deployed) is False
+
+
+def test_list_mods_all_games_sorted(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    source_a = tmp_path / "mod-a"
+    source_a.mkdir()
+    state, _, _ = import_mod(config_with_game, State(), source_a, game_id="kcd2")
+    other = add_game_profile(
+        config_with_game,
+        "other",
+        nexus_domain="othergame",
+        targets=[tmp_path / "other"],
+    )
+    source_b = tmp_path / "mod-b"
+    source_b.mkdir()
+    state, _, _ = import_mod(other, state, source_b, game_id="other")
+    all_mods = list_mods(state, game_id=None)
+    assert len(all_mods) == 2
+    assert [mod.game for mod in all_mods] == ["kcd2", "other"]

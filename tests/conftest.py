@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from lmm.cli import app
-from lmm.config import Config, ConfigStore
+from lmm.config import Config, ConfigStore, add_game_profile
+from lmm.library import import_mod
 from lmm.state import State, StateStore
 
 
@@ -44,6 +44,49 @@ def game_target(tmp_path: Path) -> Path:
     target = tmp_path / "game" / "Mods"
     target.mkdir(parents=True)
     return target
+
+
+def setup_kcd2_profile(
+    data_dir: Path,
+    game_target: Path,
+    *,
+    nexus_domain: str = "kcd",
+    library_subpath: str | None = "KCD2/Mods",
+) -> None:
+    config_store = ConfigStore(data_dir / "config.toml")
+    config = config_store.load()
+    kwargs: dict[str, object] = {
+        "nexus_domain": nexus_domain,
+        "targets": [game_target],
+    }
+    if library_subpath is not None:
+        kwargs["library_subpath"] = library_subpath
+    updated = add_game_profile(config, "kcd2", **kwargs)
+    config_store.save(updated)
+
+
+def setup_kcd2_mod(
+    data_dir: Path,
+    *,
+    mod_name: str = "mod",
+    source_name: str | None = None,
+) -> Path:
+    config_store = ConfigStore(data_dir / "config.toml")
+    state_store = StateStore(data_dir / "state.json")
+    config = config_store.load()
+    state = state_store.load()
+    mod_source = data_dir / (source_name or mod_name)
+    mod_source.mkdir(exist_ok=True)
+    (mod_source / "a.txt").write_text("a", encoding="utf-8")
+    updated_state, _, _ = import_mod(
+        config,
+        state,
+        mod_source,
+        game_id="kcd2",
+        name=mod_name if source_name else None,
+    )
+    state_store.save(updated_state)
+    return mod_source
 
 
 @pytest.fixture
@@ -90,60 +133,30 @@ def kcd2_p1_game_args(game_target: Path) -> list[str]:
 
 
 @pytest.fixture
-def kcd2_profile(
-    runner: CliRunner,
-    cli_args: list[str],
-    kcd2_game_args: list[str],
-) -> None:
-    result = runner.invoke(app, [*cli_args, *kcd2_game_args])
-    assert result.exit_code == 0, result.output
+def kcd2_profile(data_dir: Path, game_target: Path) -> None:
+    setup_kcd2_profile(data_dir, game_target)
 
 
 @pytest.fixture
-def kcd2_profile_minimal(
-    runner: CliRunner,
-    cli_args: list[str],
-    kcd2_game_args_minimal: list[str],
-) -> None:
-    result = runner.invoke(app, [*cli_args, *kcd2_game_args_minimal])
-    assert result.exit_code == 0, result.output
+def kcd2_profile_minimal(data_dir: Path, game_target: Path) -> None:
+    setup_kcd2_profile(data_dir, game_target, library_subpath=None)
 
 
 @pytest.fixture
-def kcd2_p1_profile(
-    runner: CliRunner,
-    cli_args: list[str],
-    kcd2_p1_game_args: list[str],
-) -> None:
-    result = runner.invoke(app, [*cli_args, *kcd2_p1_game_args])
-    assert result.exit_code == 0, result.output
+def kcd2_p1_profile(data_dir: Path, game_target: Path) -> None:
+    setup_kcd2_profile(
+        data_dir,
+        game_target,
+        nexus_domain="kingdomcomedeliverance2",
+        library_subpath="KingdomComeDeliverance2/Mods",
+    )
 
 
 @pytest.fixture
-def kcd2_with_mod(
-    kcd2_profile: None,
-    runner: CliRunner,
-    cli_args: list[str],
-    data_dir: Path,
-) -> Path:
-    mod_source = data_dir / "mod"
-    mod_source.mkdir()
-    (mod_source / "a.txt").write_text("a", encoding="utf-8")
-    result = runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
-    assert result.exit_code == 0, result.output
-    return mod_source
+def kcd2_with_mod(kcd2_profile: None, data_dir: Path) -> Path:
+    return setup_kcd2_mod(data_dir)
 
 
 @pytest.fixture
-def kcd2_with_mod_minimal(
-    kcd2_profile_minimal: None,
-    runner: CliRunner,
-    cli_args: list[str],
-    data_dir: Path,
-) -> Path:
-    mod_source = data_dir / "mod"
-    mod_source.mkdir()
-    (mod_source / "a.txt").write_text("a", encoding="utf-8")
-    result = runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
-    assert result.exit_code == 0, result.output
-    return mod_source
+def kcd2_with_mod_minimal(kcd2_profile_minimal: None, data_dir: Path) -> Path:
+    return setup_kcd2_mod(data_dir)

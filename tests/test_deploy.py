@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from lmm.deploy import (
     DeployError,
     build_link_plan,
     deploy_game,
+    remove_mod,
     resolve_deploy_target,
     undeploy_game,
 )
@@ -249,3 +251,115 @@ def test_undeploy_skips_changed_symlink(
     assert len(outcome.warnings) == 1
     assert link.exists()
     assert len(updated.mods[0].deployed_links) == 1
+
+
+def test_resolve_deploy_target_string_override(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, _, _ = deploy_setup
+    custom = tmp_path / "custom" / "deploy"
+    custom.mkdir(parents=True)
+    mod = ModRecord(
+        name="foo",
+        game="kcd2",
+        source_path=Path("/tmp/foo"),
+        target=str(custom),
+    )
+    assert resolve_deploy_target(config, mod) == custom.resolve()
+
+
+def test_deploy_unknown_game_raises(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, _, _ = deploy_setup
+    _, state = _add_mod(config, State(), tmp_path, name="moda")
+    with pytest.raises(DeployError, match="Unknown game profile"):
+        deploy_game(config, state, "bogus")
+
+
+def test_build_link_plan_missing_source_raises(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, _, _ = deploy_setup
+    _, state = _add_mod(config, State(), tmp_path, name="moda")
+    source = state.mods[0].source_path
+    shutil.rmtree(source)
+    with pytest.raises(DeployError, match="not a directory"):
+        build_link_plan(config, state, "kcd2")
+
+
+def test_remove_mod_dry_run_keeps_links_and_state(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, game_target, _ = deploy_setup
+    _, state = _add_mod(config, State(), tmp_path, name="moda")
+    deployed, _ = deploy_game(config, state, "kcd2")
+    mod = deployed.mods[0]
+    link = game_target / "data.txt"
+    assert link.is_symlink()
+
+    updated, outcome = remove_mod(config, deployed, mod, dry_run=True)
+    assert outcome.links_removed == 1
+    assert outcome.dry_run is True
+    assert link.is_symlink()
+    assert len(updated.mods) == 1
+    assert len(updated.mods[0].deployed_links) == 1
+
+
+def test_remove_mod_delete_files_under_library(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, game_target, _ = deploy_setup
+    _, state = _add_mod(config, State(), tmp_path, name="moda")
+    deployed, _ = deploy_game(config, state, "kcd2")
+    mod = deployed.mods[0]
+    source = mod.source_path
+    assert source.exists()
+
+    updated, outcome = remove_mod(config, deployed, mod, delete_files=True)
+    assert outcome.deleted_files is True
+    assert outcome.links_removed == 1
+    assert not (game_target / "data.txt").exists()
+    assert not source.exists()
+    assert updated.mods == []
+
+
+def test_remove_mod_delete_files_refused_outside_library(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, _, _ = deploy_setup
+    external = tmp_path / "external" / "moda"
+    external.mkdir(parents=True)
+    (external / "data.txt").write_text("mod", encoding="utf-8")
+    mod = ModRecord(
+        name="moda",
+        game="kcd2",
+        source_path=external,
+    )
+    state = State(mods=[mod])
+
+    with pytest.raises(
+        DeployError, match="Refusing to delete files outside library_root"
+    ):
+        remove_mod(config, state, mod, delete_files=True)
+    assert external.exists()
+    assert len(state.mods) == 1
+
+
+def test_deploy_string_target_override(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, game_target, _ = deploy_setup
+    custom = tmp_path / "custom" / "deploy"
+    custom.mkdir(parents=True)
+    _, state = _add_mod(config, State(), tmp_path, name="moda", target=str(custom))
+    deploy_game(config, state, "kcd2")
+    assert (custom / "data.txt").is_symlink()
+    assert not (game_target / "data.txt").exists()

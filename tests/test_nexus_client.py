@@ -145,3 +145,109 @@ def test_md5_search_uses_long_ttl_constant(
     ) as client:
         client.md5_search("kcd2", "abc")
     assert captured["ttl"] == CACHE_TTL_MD5_SEARCH
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_get_json_rejects_auth_errors(tmp_path, status_code: int) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={"error": "denied"})
+
+    with NexusClient(
+        api_key="secret",
+        cache_path=tmp_path / "cache.json",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(NexusError, match="key rejected"):
+            client.get_json("/v1/test.json", use_cache=False, retries=1)
+
+
+def test_get_json_exhausts_500_retries(tmp_path) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "server"})
+
+    with NexusClient(
+        api_key="secret",
+        cache_path=tmp_path / "cache.json",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(NexusError, match="HTTP 500"):
+            client.get_json("/v1/test.json", use_cache=False, retries=3)
+
+
+def test_get_json_rejects_non_json_body(tmp_path) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="not json")
+
+    with NexusClient(
+        api_key="secret",
+        cache_path=tmp_path / "cache.json",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(NexusError, match="not valid JSON"):
+            client.get_json("/v1/test.json", use_cache=False, retries=1)
+
+
+def test_rate_limit_headers_populated(tmp_path) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": True},
+            headers={
+                "x-rl-hourly-remaining": "100",
+                "x-rl-daily-remaining": "1000",
+            },
+        )
+
+    with NexusClient(
+        api_key="secret",
+        cache_path=tmp_path / "cache.json",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        client.get_json("/v1/test.json", use_cache=False, retries=1)
+    assert client.rate_limits.hourly_remaining == 100
+    assert client.rate_limits.daily_remaining == 1000
+
+
+def test_corrupt_cache_starts_empty(tmp_path) -> None:
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_text("{bad", encoding="utf-8")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"fresh": True})
+
+    with NexusClient(
+        api_key="secret",
+        cache_path=cache_path,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        payload = client.get_json("/v1/test.json", use_cache=False, retries=1)
+    assert payload == {"fresh": True}
+
+
+def test_updated_mods_accepts_list_payload(tmp_path) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{"mod_id": 1}, {"mod_id": 2}])
+
+    with NexusClient(
+        api_key="secret",
+        cache_path=tmp_path / "cache.json",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        mods = client.updated_mods("kcd2")
+    assert mods == [{"mod_id": 1}, {"mod_id": 2}]
+
+
+def test_mod_files_accepts_dict_files_wrapper(tmp_path) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"files": [{"file_id": 5, "version": "1.0.0"}]},
+        )
+
+    with NexusClient(
+        api_key="secret",
+        cache_path=tmp_path / "cache.json",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        files = client.mod_files("kcd2", 42)
+    assert files == [{"file_id": 5, "version": "1.0.0"}]
