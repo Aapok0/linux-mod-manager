@@ -76,6 +76,14 @@ lmm add /path/to/mod-folder --game kcd2
 lmm add mymod --game kcd2
 ```
 
+Bulk import from a staging directory (one extracted mod per subdirectory):
+
+```bash
+# ~/Downloads/kcd2-mods/moda/, modb/, ... — archives at the top level are skipped
+lmm add ~/Downloads/kcd2-mods --game kcd2 --all
+lmm add ~/Downloads/kcd2-mods --game kcd2 --all --move   # move instead of copy
+```
+
 ### 4. Deploy
 
 ```bash

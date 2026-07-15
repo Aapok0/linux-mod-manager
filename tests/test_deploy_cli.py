@@ -302,3 +302,114 @@ def test_cli_add_rejects_target_index_and_path(
     assert result.exit_code == 2
     output = plain_cli_output(result.output)
     assert "Use only one of --target-index or --target-path" in output
+
+
+def test_cli_add_all_imports_staging_directory(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+    data_dir: Path,
+) -> None:
+    staging = data_dir / "incoming" / "batch"
+    staging.mkdir(parents=True)
+    for name in ("moda", "modb"):
+        mod_dir = staging / name
+        mod_dir.mkdir()
+        (mod_dir / "file.txt").write_text(name, encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [*cli_args, "add", str(staging), "--game", "kcd2", "--all"],
+    )
+    assert result.exit_code == 0, result.output
+    state = StateStore(data_dir / "state.json").load()
+    assert {mod.name for mod in state.mods} == {"moda", "modb"}
+
+
+def test_cli_add_all_move_removes_staging_children(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+    data_dir: Path,
+) -> None:
+    staging = data_dir / "incoming" / "batch"
+    staging.mkdir(parents=True)
+    mod_dir = staging / "movable"
+    mod_dir.mkdir()
+    (mod_dir / "file.txt").write_text("x", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [*cli_args, "add", str(staging), "--game", "kcd2", "--all", "--move"],
+    )
+    assert result.exit_code == 0, result.output
+    assert not mod_dir.exists()
+
+
+def test_cli_add_all_json_payload(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+    data_dir: Path,
+) -> None:
+    staging = data_dir / "incoming" / "batch"
+    staging.mkdir(parents=True)
+    (staging / "moda").mkdir()
+    (staging / "readme.txt").write_text("x", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [*cli_args, "--json", "add", str(staging), "--game", "kcd2", "--all"],
+    )
+    assert result.exit_code == 0, result.output
+    assert '"imported"' in result.output
+    assert '"skipped"' in result.output
+    assert '"failures"' in result.output
+    assert "not_a_directory" in result.output
+
+
+def test_cli_add_all_rejects_name_override(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+    data_dir: Path,
+) -> None:
+    staging = data_dir / "incoming" / "batch"
+    staging.mkdir(parents=True)
+    result = runner.invoke(
+        app,
+        [
+            *cli_args,
+            "add",
+            str(staging),
+            "--game",
+            "kcd2",
+            "--all",
+            "--name",
+            "custom",
+        ],
+        color=False,
+    )
+    assert result.exit_code == 2
+    output = plain_cli_output(result.output)
+    assert "--all cannot be combined" in output
+
+
+def test_cli_add_all_dry_run(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+    data_dir: Path,
+) -> None:
+    staging = data_dir / "incoming" / "batch"
+    staging.mkdir(parents=True)
+    (staging / "moda").mkdir()
+
+    result = runner.invoke(
+        app,
+        [*cli_args, "--dry-run", "add", str(staging), "--game", "kcd2", "--all"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Imported 1 mod(s)" in result.output
+    state = StateStore(data_dir / "state.json").load()
+    assert state.mods == []

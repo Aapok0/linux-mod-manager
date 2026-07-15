@@ -26,8 +26,12 @@ from lmm.deploy import DeployError, deploy_game, remove_mod, undeploy_game
 from lmm.doctor import doctor_has_errors, run_doctor
 from lmm.library import (
     ImportAction,
+    ImportFailure,
+    ImportResult,
+    ImportSkip,
     LibraryError,
     import_mod,
+    import_mods_from_directory,
     list_mods,
     mod_is_deployed,
     resolve_mod_source,
@@ -158,6 +162,45 @@ def _import_action_message(action: ImportAction, record) -> str:
         f"Registered mod [bold]{record.game}/{record.name}[/bold] "
         f"in place at {record.source_path}"
     )
+
+
+def _bulk_import_json_payload(
+    results: list[ImportResult],
+    failures: list[ImportFailure],
+    skips: list[ImportSkip],
+) -> dict[str, object]:
+    return {
+        "imported": [
+            {
+                **item.record.model_dump(mode="json"),
+                "import_action": item.action.value,
+            }
+            for item in results
+        ],
+        "skipped": [{"path": str(item.path), "reason": item.reason} for item in skips],
+        "failures": [{"name": item.name, "error": item.error} for item in failures],
+    }
+
+
+def _print_bulk_import_summary(
+    *,
+    dry_run: bool,
+    results: list[ImportResult],
+    failures: list[ImportFailure],
+    skips: list[ImportSkip],
+) -> None:
+    prefix = "[dry-run] " if dry_run else ""
+    if results:
+        imported = ", ".join(
+            f"{item.record.name} ({item.action.value})" for item in results
+        )
+        console.print(f"{prefix}Imported {len(results)} mod(s): {imported}")
+    elif not failures and not skips:
+        console.print(f"{prefix}No mods found to import.")
+    for item in skips:
+        console.print(f"Skipped: {item.path.name} ({item.reason})")
+    for item in failures:
+        console.print(f"FAIL: {item.name}: {item.error}")
 
 
 @app.callback()
@@ -449,10 +492,26 @@ def mod_add(
             help="Move mod tree into library instead of copying (outside library only)",
         ),
     ] = False,
+    all_mods: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Import each immediate subdirectory as a separate mod",
+        ),
+    ] = False,
 ) -> None:
     """Import a mod directory and record it in state."""
     if target_index is not None and target_path is not None:
         raise typer.BadParameter("Use only one of --target-index or --target-path")
+    if all_mods and (
+        name is not None
+        or mod_id is not None
+        or target_index is not None
+        or target_path is not None
+    ):
+        raise typer.BadParameter(
+            "--all cannot be combined with --name, --mod-id, or target overrides"
+        )
 
     def run() -> None:
         app_ctx = _ctx(ctx)
@@ -460,6 +519,39 @@ def mod_add(
         state_store = _state_store(app_ctx)
         config = config_store.load()
         state = state_store.load()
+
+        if all_mods:
+            parent = name_or_path.resolve()
+            updated_state, results, failures, skips = import_mods_from_directory(
+                config,
+                state,
+                parent,
+                game_id=game,
+                copy=not move,
+                dry_run=app_ctx.dry_run,
+            )
+            if not app_ctx.dry_run:
+                state_store.save(updated_state)
+            if app_ctx.as_json:
+                typer.echo(
+                    json.dumps(
+                        _bulk_import_json_payload(results, failures, skips),
+                        indent=2,
+                    ),
+                )
+                if failures:
+                    raise typer.Exit(1)
+                return
+            _print_bulk_import_summary(
+                dry_run=app_ctx.dry_run,
+                results=results,
+                failures=failures,
+                skips=skips,
+            )
+            if failures:
+                raise typer.Exit(1)
+            return
+
         source = resolve_mod_source(config, game, name_or_path)
         target_override: int | str | None
         if target_index is not None:

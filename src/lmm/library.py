@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from lmm.config import Config
@@ -24,6 +25,141 @@ class ImportAction(enum.StrEnum):
     REGISTERED = "registered"
     COPIED = "copied"
     MOVED = "moved"
+
+
+@dataclass
+class ImportSkip:
+    path: Path
+    reason: str
+
+
+@dataclass
+class ImportFailure:
+    name: str
+    error: str
+
+
+@dataclass
+class ImportResult:
+    record: ModRecord
+    action: ImportAction
+
+
+def _mod_registered(state: State, game_id: str, name: str) -> bool:
+    return any(mod.game == game_id and mod.name == name for mod in state.mods)
+
+
+def discover_mod_dirs(parent: Path) -> list[Path]:
+    """Return sorted immediate child directories, excluding dot-prefixed names."""
+    parent = parent.resolve()
+    return sorted(
+        entry
+        for entry in parent.iterdir()
+        if entry.is_dir() and not entry.name.startswith(".")
+    )
+
+
+def _planned_import(
+    config: Config,
+    source: Path,
+    game_id: str,
+    *,
+    copy: bool,
+) -> tuple[ModRecord, ImportAction]:
+    mod_name = validate_path_segment(source.name, field="mod name")
+    library_root = config.library_root.resolve()
+    game_dir = game_library_dir(config, game_id)
+
+    if path_within_root(source, library_root):
+        if not path_within_root(source, game_dir):
+            msg = (
+                f"Mod path is in the library but not under this game's directory: "
+                f"{source} (expected under {game_dir})"
+            )
+            raise LibraryError(msg)
+        destination = source
+        action = ImportAction.REGISTERED
+    else:
+        destination = resolve_mod_destination(config, game_id, mod_name)
+        if destination.exists():
+            msg = f"Destination already exists: {destination}"
+            raise LibraryError(msg)
+        action = ImportAction.MOVED if not copy else ImportAction.COPIED
+
+    record = ModRecord(
+        name=mod_name,
+        game=game_id,
+        source_path=destination,
+    )
+    return record, action
+
+
+def import_mods_from_directory(
+    config: Config,
+    state: State,
+    parent: Path,
+    game_id: str,
+    *,
+    copy: bool = True,
+    dry_run: bool = False,
+) -> tuple[State, list[ImportResult], list[ImportFailure], list[ImportSkip]]:
+    if game_id not in config.games:
+        msg = f"Unknown game profile: {game_id}"
+        raise LibraryError(msg)
+
+    parent = parent.resolve()
+    if not parent.exists():
+        msg = f"Mod path does not exist: {parent}"
+        raise LibraryError(msg)
+    if not parent.is_dir():
+        msg = f"Mod path is not a directory: {parent}"
+        raise LibraryError(msg)
+
+    updated = state.model_copy(deep=True)
+    results: list[ImportResult] = []
+    failures: list[ImportFailure] = []
+    skips: list[ImportSkip] = []
+
+    for entry in sorted(parent.iterdir(), key=lambda path: path.name):
+        if entry.is_file():
+            skips.append(ImportSkip(path=entry, reason="not_a_directory"))
+            continue
+        if not entry.is_dir():
+            continue
+        if entry.name.startswith("."):
+            skips.append(ImportSkip(path=entry, reason="hidden"))
+            continue
+
+        mod_name = entry.name
+        if _mod_registered(updated, game_id, mod_name):
+            skips.append(ImportSkip(path=entry, reason="already_registered"))
+            continue
+
+        if dry_run:
+            try:
+                record, action = _planned_import(config, entry, game_id, copy=copy)
+            except (LibraryError, PathValidationError, ValueError) as exc:
+                failures.append(ImportFailure(name=mod_name, error=str(exc)))
+                continue
+            results.append(ImportResult(record=record, action=action))
+            continue
+
+        try:
+            updated, record, action = import_mod(
+                config,
+                updated,
+                entry,
+                game_id=game_id,
+                copy=copy,
+            )
+        except (LibraryError, ValueError) as exc:
+            failures.append(ImportFailure(name=mod_name, error=str(exc)))
+            continue
+        results.append(ImportResult(record=record, action=action))
+
+    if dry_run:
+        return state, results, failures, skips
+    return updated, results, failures, skips
 
 
 def game_library_dir(config: Config, game_id: str) -> Path:
