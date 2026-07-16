@@ -16,6 +16,7 @@ from rich.table import Table
 
 from lmm import __version__
 from lmm.config import (
+    Config,
     ConfigError,
     ConfigStore,
     DeployLayout,
@@ -54,6 +55,7 @@ from lmm.nexus.updates import (
     unlinked_mods,
 )
 from lmm.state import (
+    State,
     StateError,
     StateStore,
     adjust_mod_targets_after_remove,
@@ -260,12 +262,12 @@ def _print_bulk_update_summary(
 
 
 def _redeploy_updated_mods(
-    config,
-    state,
+    config: Config,
+    state: State,
     results: list[UpdateResult],
     *,
     dry_run: bool,
-) -> tuple[object, list[str]]:
+) -> tuple[State, list[str]]:
     failures: list[str] = []
     updated_state = state
     for item in results:
@@ -770,11 +772,11 @@ def mod_update(
                     client=client,
                 )
             else:
+                assert download_file is not None
+                source = download_file.resolve()
                 mod = find_mod(state, str(mod_or_dir), default_game=game)
                 if only_updates and not mod.update_available:
-                    skips = [
-                        UpdateSkip(path=download_file.resolve(), reason="not_flagged")
-                    ]
+                    skips = [UpdateSkip(path=source, reason="not_flagged")]
                     results = []
                     failures = []
                     updated_state = state
@@ -783,7 +785,7 @@ def mod_update(
                         config,
                         state,
                         mod,
-                        download_file.resolve(),
+                        source,
                         copy=not move,
                         dry_run=app_ctx.dry_run,
                         client=client,
