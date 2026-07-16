@@ -197,6 +197,16 @@ def add_mod_record(state: State, record: ModRecord) -> State:
     return updated
 
 
+def update_mod_record(state: State, record: ModRecord) -> State:
+    updated = state.model_copy(deep=True)
+    for index, mod in enumerate(updated.mods):
+        if mod.game == record.game and mod.name == record.name:
+            updated.mods[index] = record
+            return updated
+    msg = f"Mod not found: {record.game}/{record.name}"
+    raise StateError(msg)
+
+
 def mods_referencing_target_index(
     state: State, game_id: str, index: int
 ) -> list[ModRecord]:

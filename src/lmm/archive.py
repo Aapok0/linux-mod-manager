@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
+
+_NEXUS_DOWNLOAD_FILENAME = re.compile(
+    r"-(?P<mod_id>\d+)-[\d.]+(?:-\d+)?$",
+    re.IGNORECASE,
+)
 
 DOWNLOAD_DIRNAME = "download"
 
@@ -40,6 +46,14 @@ def is_loose_download(path: Path) -> bool:
 def is_download_file(path: Path) -> bool:
     suffix = path.suffix.lower()
     return suffix in ARCHIVE_SUFFIXES or suffix in LOOSE_DOWNLOAD_SUFFIXES
+
+
+def parse_nexus_download_filename(path: Path) -> int | None:
+    """Return Nexus mod id from a Vortex-style download filename, if present."""
+    match = _NEXUS_DOWNLOAD_FILENAME.search(path.stem)
+    if match is None:
+        return None
+    return int(match.group("mod_id"))
 
 
 def peek_archive_root_name(archive: Path) -> str | None:

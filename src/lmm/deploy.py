@@ -113,30 +113,40 @@ def build_link_plan(config: Config, state: State, game_id: str) -> list[PlannedL
         msg = f"Unknown game profile: {game_id}"
         raise DeployError(msg)
 
-    profile = config.games[game_id]
     plan: list[PlannedLink] = []
     for mod in state.mods:
         if mod.game != game_id or not mod.enabled:
             continue
-        deploy_target = resolve_deploy_target(config, mod)
-        source_root = mod.source_path.resolve()
-        if not source_root.is_dir():
-            msg = f"Mod source is not a directory: {source_root}"
-            raise DeployError(msg)
-        for source_file in sorted(source_root.rglob("*")):
-            if not source_file.is_file():
-                continue
-            relative = source_file.relative_to(source_root)
-            if relative.parts and relative.parts[0] == DOWNLOAD_DIRNAME:
-                continue
-            link_path = resolve_link_path(
-                profile,
-                mod,
-                deploy_target,
-                source_file,
-                source_root,
-            )
-            plan.append(PlannedLink(mod=mod, source=source_file, link=link_path))
+        plan.extend(build_link_plan_for_mod(config, mod))
+    return plan
+
+
+def build_link_plan_for_mod(config: Config, mod: ModRecord) -> list[PlannedLink]:
+    profile = config.games.get(mod.game)
+    if profile is None:
+        msg = f"Unknown game profile: {mod.game}"
+        raise DeployError(msg)
+
+    deploy_target = resolve_deploy_target(config, mod)
+    source_root = mod.source_path.resolve()
+    if not source_root.is_dir():
+        msg = f"Mod source is not a directory: {source_root}"
+        raise DeployError(msg)
+    plan: list[PlannedLink] = []
+    for source_file in sorted(source_root.rglob("*")):
+        if not source_file.is_file():
+            continue
+        relative = source_file.relative_to(source_root)
+        if relative.parts and relative.parts[0] == DOWNLOAD_DIRNAME:
+            continue
+        link_path = resolve_link_path(
+            profile,
+            mod,
+            deploy_target,
+            source_file,
+            source_root,
+        )
+        plan.append(PlannedLink(mod=mod, source=source_file, link=link_path))
     return plan
 
 
@@ -284,6 +294,81 @@ def deploy_game(
 
     new_mods = [updated_mods[(mod.game, mod.name)] for mod in state.mods]
     return state.model_copy(update={"mods": new_mods}), outcome
+
+
+def undeploy_mod(
+    config: Config,
+    state: State,
+    mod: ModRecord,
+    *,
+    dry_run: bool = False,
+) -> tuple[State, LinkRemovalResult]:
+    from lmm.state import update_mod_record
+
+    _ = config
+    removal = _remove_mod_links(mod, dry_run=dry_run)
+    if dry_run:
+        return state, removal
+    return update_mod_record(state, removal.mod), removal
+
+
+def deploy_mod(
+    config: Config,
+    state: State,
+    mod: ModRecord,
+    *,
+    dry_run: bool = False,
+) -> tuple[State, DeployOutcome]:
+    from lmm.state import update_mod_record
+
+    outcome = DeployOutcome(dry_run=dry_run)
+    if not mod.enabled:
+        return state, outcome
+
+    current = mod.model_copy(deep=True)
+    plan = build_link_plan_for_mod(config, current)
+
+    for entry in plan:
+        link = entry.link
+        source = entry.source
+
+        if link.exists():
+            if link.is_symlink() and link.resolve() == source.resolve():
+                if _owned_link(link, source, current):
+                    outcome.links_skipped += 1
+                    continue
+                outcome.conflicts.append(
+                    f"Conflict at {link}: foreign symlink (not owned by lmm)",
+                )
+                continue
+            if link.is_symlink():
+                outcome.conflicts.append(
+                    f"Conflict at {link}: foreign symlink (not owned by lmm)",
+                )
+            else:
+                outcome.conflicts.append(
+                    f"Conflict at {link}: foreign file blocks symlink",
+                )
+            continue
+
+        created_dirs = list(current.created_dirs)
+        if dry_run:
+            outcome.links_created += 1
+            current.deployed_links.append(DeployedLink(link=link, source=source))
+            _mkdir_parents(link, created_dirs, dry_run=True)
+            current.created_dirs = created_dirs
+            continue
+
+        _mkdir_parents(link, created_dirs, dry_run=False)
+        link.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(source, link)
+        current.deployed_links.append(DeployedLink(link=link, source=source))
+        current.created_dirs = created_dirs
+        outcome.links_created += 1
+
+    if dry_run:
+        return state, outcome
+    return update_mod_record(state, current), outcome
 
 
 def remove_mod(
