@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zipfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -11,16 +12,21 @@ from fixtures.nexus import FakeNexusClient
 from lmm.config import Config, ConfigError, add_game_profile
 from lmm.library import import_mod
 from lmm.nexus.updates import (
-    _pick_md5_match,
-    _pick_primary_file,
     check_for_updates,
     identify_mods,
     is_newer_version,
     plan_check,
     plan_identify,
+    unlinked_mods,
     version_compare_used_fallback,
 )
+from lmm.nexus.updates_hash import _pick_md5_match
 from lmm.state import State
+
+
+def _make_mod_zip(path: Path, mod_name: str) -> None:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"{mod_name}/file.txt", mod_name)
 
 
 def _setup_mod(tmp_path: Path, name: str = "moda") -> tuple[Config, State]:
@@ -35,18 +41,18 @@ def _setup_mod(tmp_path: Path, name: str = "moda") -> tuple[Config, State]:
         targets=[game_target],
         library_subpath="KCD2/Mods",
     )
-    source = tmp_path / "incoming" / name
-    source.mkdir(parents=True, exist_ok=True)
-    (source / "file.txt").write_text(name, encoding="utf-8")
-    state, _, _ = import_mod(config, State(), source, game_id="kcd2")
+    archive = tmp_path / "incoming" / f"{name}.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    _make_mod_zip(archive, name)
+    state, _, _ = import_mod(config, State(), archive, game_id="kcd2", name=name)
     return config, state
 
 
 def _add_mod(config: Config, state: State, tmp_path: Path, name: str) -> State:
-    source = tmp_path / "incoming" / name
-    source.mkdir(parents=True, exist_ok=True)
-    (source / "file.txt").write_text(name, encoding="utf-8")
-    updated, _, _ = import_mod(config, state, source, game_id="kcd2")
+    archive = tmp_path / "incoming" / f"{name}.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    _make_mod_zip(archive, name)
+    updated, _, _ = import_mod(config, state, archive, game_id="kcd2", name=name)
     return updated
 
 
@@ -171,14 +177,23 @@ def test_identify_mods_reports_skip_when_no_nexus_match(tmp_path: Path) -> None:
     assert updated.mods[0].nexus_mod_id is None
 
 
-def test_pick_primary_file_prefers_archive_over_larger_text(tmp_path: Path) -> None:
-    mod_dir = tmp_path / "mod"
-    mod_dir.mkdir()
-    (mod_dir / "readme.txt").write_text("x" * 1000, encoding="utf-8")
-    (mod_dir / "content.pak").write_bytes(b"small")
-    picked = _pick_primary_file(mod_dir)
-    assert picked is not None
-    assert picked.name == "content.pak"
+def test_identify_mods_hashes_download_path_not_extracted_files(
+    tmp_path: Path,
+) -> None:
+    config, state = _setup_mod(tmp_path)
+    mod = state.mods[0]
+    assert mod.download_path is not None
+    (mod.source_path / "file.txt").write_text("changed", encoding="utf-8")
+
+    class HashClient(FakeNexusClient):
+        def md5_search(self, _: str, md5_hash: str) -> list[dict]:
+            assert mod.download_path is not None
+            from lmm.nexus.updates_hash import _file_md5
+
+            assert md5_hash == _file_md5(mod.download_path)
+            return [{"mod_id": 42, "file_id": 7, "version": "1.1.0"}]
+
+    identify_mods(config, state, "kcd2", client=HashClient())
 
 
 def test_pick_md5_match_prefers_exact_file_size() -> None:
@@ -192,15 +207,15 @@ def test_pick_md5_match_prefers_exact_file_size() -> None:
 
 def test_identify_mods_disambiguates_md5_matches_by_size(tmp_path: Path) -> None:
     config, state = _setup_mod(tmp_path)
-    content = b"abc"
-    source = state.mods[0].source_path
-    (source / "mod.pak").write_bytes(content)
+    download = state.mods[0].download_path
+    assert download is not None
+    local_size = download.stat().st_size
 
     class SizedClient(FakeNexusClient):
         def md5_search(self, _: str, __: str) -> list[dict]:
             return [
                 {"mod_id": 1, "file_details": {"size": 999}},
-                {"mod_id": 42, "file_details": {"size": len(content)}},
+                {"mod_id": 42, "file_details": {"size": local_size}},
             ]
 
     updated, results, failures, skips = identify_mods(
@@ -213,12 +228,45 @@ def test_identify_mods_disambiguates_md5_matches_by_size(tmp_path: Path) -> None
     assert updated.mods[0].nexus_mod_id == 42
 
 
-def test_plan_identify_lists_candidates(tmp_path: Path) -> None:
+def test_identify_mods_uses_tracked_mods_name_match(tmp_path: Path) -> None:
+    config, state = _setup_mod(tmp_path, "Easy Sharpening")
+
+    class TrackedClient(FakeNexusClient):
+        def md5_search(self, _: str, __: str) -> list[dict]:
+            return []
+
+        def tracked_mods(self) -> list[dict]:
+            return [
+                {
+                    "mod_id": 68,
+                    "name": "Easy Sharpening",
+                    "game_domain_name": "kingdomcomedeliverance2",
+                }
+            ]
+
+    updated, results, failures, skips = identify_mods(
+        config, state, "kcd2", client=TrackedClient()
+    )
+    assert failures == []
+    assert skips == []
+    assert len(results) == 1
+    assert updated.mods[0].nexus_mod_id == 68
+
+
+def test_plan_identify_lists_download_path(tmp_path: Path) -> None:
     config, state = _setup_mod(tmp_path)
     planned = plan_identify(config, state, "kcd2")
     assert len(planned) == 1
     assert planned[0].mod_ref == "kcd2/moda"
-    assert planned[0].source_file is not None
+    assert planned[0].source_file == state.mods[0].download_path
+
+
+def test_unlinked_mods(tmp_path: Path) -> None:
+    config, state = _setup_mod(tmp_path)
+    assert len(unlinked_mods(state, "kcd2")) == 1
+    linked = state.model_copy(deep=True)
+    linked.mods[0] = linked.mods[0].model_copy(update={"nexus_mod_id": 1})
+    assert unlinked_mods(linked, "kcd2") == []
 
 
 def test_check_for_updates_skips_fresh_mod_not_in_updated_set(tmp_path: Path) -> None:

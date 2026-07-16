@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from lmm.io import atomic_write
 from lmm.paths import default_state_path
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 class StateError(Exception):
@@ -40,6 +40,7 @@ class ModRecord(BaseModel):
     name: str
     game: str
     source_path: Path
+    download_path: Path | None = None
     enabled: bool = True
     target: int | str | None = None
     nexus_mod_id: int | None = None
@@ -53,14 +54,16 @@ class ModRecord(BaseModel):
     latest_version: str | None = None
     notes: str | None = None
 
-    @field_validator("source_path", mode="before")
+    @field_validator("source_path", "download_path", mode="before")
     @classmethod
-    def _coerce_source_path(cls, value: object) -> Path:
+    def _coerce_path_fields(cls, value: object) -> Path | None:
+        if value is None:
+            return None
         if isinstance(value, Path):
             return value
         if isinstance(value, str):
             return Path(value)
-        msg = "source_path must be a path"
+        msg = "path fields must be strings or Path objects"
         raise TypeError(msg)
 
     @field_validator("created_dirs", mode="before")
@@ -80,7 +83,17 @@ class State(BaseModel):
 
 
 Migration = Callable[[dict[str, Any]], dict[str, Any]]
-MIGRATIONS: dict[int, Migration] = {}
+
+
+def _migrate_v1_to_v2(raw: dict[str, Any]) -> dict[str, Any]:
+    for mod in raw.get("mods", []):
+        if isinstance(mod, dict) and "download_path" not in mod:
+            mod["download_path"] = None
+    raw["schema_version"] = 2
+    return raw
+
+
+MIGRATIONS: dict[int, Migration] = {1: _migrate_v1_to_v2}
 
 
 def migrate_state(raw: dict[str, Any]) -> dict[str, Any]:

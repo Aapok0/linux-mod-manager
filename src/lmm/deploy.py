@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lmm.archive import DOWNLOAD_DIRNAME
 from lmm.config import Config, GameProfile
 from lmm.state import DeployedLink, ModRecord, State
 
@@ -124,6 +125,9 @@ def build_link_plan(config: Config, state: State, game_id: str) -> list[PlannedL
             raise DeployError(msg)
         for source_file in sorted(source_root.rglob("*")):
             if not source_file.is_file():
+                continue
+            relative = source_file.relative_to(source_root)
+            if relative.parts and relative.parts[0] == DOWNLOAD_DIRNAME:
                 continue
             link_path = resolve_link_path(
                 profile,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -180,14 +181,16 @@ def test_cli_game_target_remove_blocked_when_mod_references_index(
             str(alt_target),
         ],
     )
-    mod_source = data_dir / "incoming" / "alt-mod"
-    mod_source.mkdir(parents=True)
+    mod_archive = data_dir / "incoming" / "alt-mod.zip"
+    mod_archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(mod_archive, "w") as zf:
+        zf.writestr("alt-mod/file.txt", "x")
     runner.invoke(
         app,
         [
             *cli_args,
             "add",
-            str(mod_source),
+            str(mod_archive),
             "--game",
             "kcd2",
             "--target-index",
@@ -228,14 +231,16 @@ def test_cli_game_target_remove_decrements_higher_indices(
             str(third_target),
         ],
     )
-    mod_source = data_dir / "incoming" / "binary-mod"
-    mod_source.mkdir(parents=True)
+    mod_archive = data_dir / "incoming" / "binary-mod.zip"
+    mod_archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(mod_archive, "w") as zf:
+        zf.writestr("binary-mod/file.txt", "x")
     runner.invoke(
         app,
         [
             *cli_args,
             "add",
-            str(mod_source),
+            str(mod_archive),
             "--game",
             "kcd2",
             "--target-index",

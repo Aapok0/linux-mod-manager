@@ -39,12 +39,14 @@ from lmm.library import (
 )
 from lmm.logging_config import setup_logging
 from lmm.nexus import NexusClient, NexusError
+from lmm.nexus.link import LinkError, link_mod_record
 from lmm.nexus.updates import (
     IdentifySkip,
     check_for_updates,
     identify_mods,
     plan_check,
     plan_identify,
+    unlinked_mods,
 )
 from lmm.state import (
     StateError,
@@ -67,6 +69,8 @@ game_app = typer.Typer(help="Manage game profiles.")
 app.add_typer(game_app, name="game")
 target_app = typer.Typer(help="Manage deploy targets for a game profile.")
 game_app.add_typer(target_app, name="target")
+mod_app = typer.Typer(help="Mod metadata and Nexus linking.")
+app.add_typer(mod_app, name="mod")
 
 console = Console()
 stderr_console = Console(stderr=True)
@@ -136,12 +140,16 @@ def _count_game_links(state, game_id: str) -> int:
 
 
 def _identify_degraded(
+    state,
+    game_id: str,
     skips: list[IdentifySkip],
     failures: list[object],
 ) -> bool:
     if failures:
         return True
-    return any(skip.reason in ("no_hashable_file", "no_nexus_match") for skip in skips)
+    if unlinked_mods(state, game_id):
+        return True
+    return any(skip.reason in ("no_download_file", "no_nexus_match") for skip in skips)
 
 
 def _deploy_apply_hint(game: str) -> None:
@@ -157,6 +165,11 @@ def _import_action_message(action: ImportAction, record) -> str:
     if action == ImportAction.MOVED:
         return (
             f"Moved mod [bold]{record.game}/{record.name}[/bold] "
+            f"to {record.source_path}"
+        )
+    if action == ImportAction.EXTRACTED:
+        return (
+            f"Imported mod [bold]{record.game}/{record.name}[/bold] "
             f"to {record.source_path}"
         )
     return (
@@ -476,7 +489,7 @@ def mod_add(
     name_or_path: Annotated[
         Path,
         typer.Argument(
-            help="Mod directory path or bare mod name under the game library"
+            help="Nexus download file, directory of downloads, or library mod package"
         ),
     ],
     game: Annotated[str, typer.Option("--game", help="Game profile id")],
@@ -487,6 +500,10 @@ def mod_add(
     mod_id: Annotated[
         int | None,
         typer.Option("--mod-id", help="Nexus mod id"),
+    ] = None,
+    mod_url: Annotated[
+        str | None,
+        typer.Option("--mod-url", help="Nexus mod page URL"),
     ] = None,
     target_index: Annotated[
         int | None,
@@ -507,21 +524,27 @@ def mod_add(
         bool,
         typer.Option(
             "--all",
-            help="Import each immediate subdirectory as a separate mod",
+            help=(
+                "Import each top-level download file (.zip, .7z, .rar, loose mod file)"
+            ),
         ),
     ] = False,
 ) -> None:
-    """Import a mod directory and record it in state."""
+    """Import a Nexus download and record it in state."""
+    if mod_id is not None and mod_url is not None:
+        raise typer.BadParameter("Use only one of --mod-id or --mod-url")
     if target_index is not None and target_path is not None:
         raise typer.BadParameter("Use only one of --target-index or --target-path")
     if all_mods and (
         name is not None
         or mod_id is not None
+        or mod_url is not None
         or target_index is not None
         or target_path is not None
     ):
         raise typer.BadParameter(
-            "--all cannot be combined with --name, --mod-id, or target overrides"
+            "--all cannot be combined with --name, --mod-id, --mod-url, "
+            "or target overrides"
         )
 
     def run() -> None:
@@ -581,6 +604,23 @@ def mod_add(
             target=target_override,
             copy=not move,
         )
+        if mod_id is not None or mod_url is not None:
+            with _nexus_client(app_ctx, config_store) as client:
+                client.validate_key()
+                try:
+                    record = link_mod_record(
+                        config,
+                        record,
+                        client=client,
+                        mod_id=mod_id,
+                        url=mod_url,
+                    )
+                except (LinkError, NexusError) as exc:
+                    raise LibraryError(str(exc)) from exc
+                for index, entry in enumerate(updated_state.mods):
+                    if entry.game == record.game and entry.name == record.name:
+                        updated_state.mods[index] = record
+                        break
         state_store.save(updated_state)
         if app_ctx.as_json:
             payload = record.model_dump(mode="json")
@@ -648,6 +688,65 @@ def mod_list(
                 row.append(_truncate_path(mod.source_path))
             table.add_row(*row)
         console.print(table)
+
+    _handle_errors(run)
+
+
+@mod_app.command("link")
+def mod_link(
+    ctx: typer.Context,
+    mod: Annotated[str, typer.Argument(help="Mod name or game/name")],
+    game: Annotated[
+        str | None,
+        typer.Option("--game", help="Game profile id when mod name is ambiguous"),
+    ] = None,
+    mod_id: Annotated[
+        int | None,
+        typer.Option("--mod-id", help="Nexus mod id"),
+    ] = None,
+    url: Annotated[
+        str | None,
+        typer.Option("--url", help="Nexus mod page URL"),
+    ] = None,
+) -> None:
+    """Link a mod to Nexus metadata for identify/check."""
+
+    def run() -> None:
+        if mod_id is None and url is None:
+            raise typer.BadParameter("Provide --mod-id or --url")
+        if mod_id is not None and url is not None:
+            raise typer.BadParameter("Use only one of --mod-id or --url")
+        app_ctx = _ctx(ctx)
+        config_store = _config_store(app_ctx)
+        state_store = _state_store(app_ctx)
+        config = config_store.load()
+        state = state_store.load()
+        record = find_mod(state, mod, default_game=game)
+        with _nexus_client(app_ctx, config_store) as client:
+            client.validate_key()
+            try:
+                linked = link_mod_record(
+                    config,
+                    record,
+                    client=client,
+                    mod_id=mod_id,
+                    url=url,
+                )
+            except (LinkError, NexusError) as exc:
+                raise LibraryError(str(exc)) from exc
+        updated = state.model_copy(deep=True)
+        for index, entry in enumerate(updated.mods):
+            if entry.game == linked.game and entry.name == linked.name:
+                updated.mods[index] = linked
+                break
+        state_store.save(updated)
+        if app_ctx.as_json:
+            typer.echo(json.dumps(linked.model_dump(mode="json"), indent=2))
+            return
+        console.print(
+            f"Linked mod [bold]{linked.game}/{linked.name}[/bold] "
+            f"to Nexus mod {linked.nexus_mod_id}"
+        )
 
     _handle_errors(run)
 
@@ -977,7 +1076,7 @@ def mod_identify(
             )
             for item in planned:
                 if item.source_file is None:
-                    console.print(f"  {item.mod_ref}: no hashable file found")
+                    console.print(f"  {item.mod_ref}: no download file found")
                 else:
                     console.print(f"  {item.mod_ref}: {item.source_file}")
             return
@@ -1030,7 +1129,7 @@ def mod_identify(
                 ],
             }
             typer.echo(json.dumps(payload, indent=2))
-            if _identify_degraded(skips, failures):
+            if _identify_degraded(updated, game, skips, failures):
                 raise typer.Exit(1)
             return
         console.print(
@@ -1040,7 +1139,14 @@ def mod_identify(
             typer.echo(f"  SKIP {item.mod_ref}: {item.reason}", err=True)
         for item in failures:
             typer.echo(f"  {item.mod_ref}: {item.error}", err=True)
-        if _identify_degraded(skips, failures):
+        remaining = unlinked_mods(updated, game)
+        if remaining:
+            typer.echo(
+                f"{len(remaining)} mod(s) still not linked; "
+                f"run 'lmm mod link <mod> --url …' or 'lmm mod link <mod> --mod-id N'",
+                err=True,
+            )
+        if _identify_degraded(updated, game, skips, failures):
             raise typer.Exit(1)
 
     _handle_errors(run)
@@ -1059,6 +1165,14 @@ def mod_check(
         state_store = _state_store(app_ctx)
         config = config_store.load()
         state = state_store.load()
+        not_linked = unlinked_mods(state, game)
+        if not_linked and not app_ctx.dry_run:
+            names = ", ".join(f"{mod.game}/{mod.name}" for mod in not_linked)
+            typer.echo(
+                f"{len(not_linked)} mod(s) not linked to Nexus: {names}. "
+                f"Run 'lmm identify {game}' or 'lmm mod link <mod> --url …'.",
+                err=True,
+            )
         if app_ctx.dry_run:
             planned = plan_check(config, state, game)
             if app_ctx.as_json:

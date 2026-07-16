@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -47,10 +48,13 @@ def _add_mod(
     name: str,
     target: int | str | None = None,
 ) -> tuple[Config, State]:
-    source = tmp_path / "incoming" / name
-    source.mkdir(parents=True)
-    (source / "data.txt").write_text("mod", encoding="utf-8")
-    state, _, _ = import_mod(config, state, source, game_id="kcd2", target=target)
+    archive = tmp_path / "incoming" / f"{name}.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(f"{name}/data.txt", "mod")
+    state, _, _ = import_mod(
+        config, state, archive, game_id="kcd2", name=name, target=target
+    )
     return config, state
 
 
@@ -87,6 +91,19 @@ def test_deploy_creates_symlinks(
     assert link.resolve() == (config.library_root / "KCD2/Mods/moda/data.txt").resolve()
     assert outcome.links_created == 1
     assert len(updated.mods[0].deployed_links) == 1
+
+
+def test_deploy_skips_download_subdir(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, game_target, _ = deploy_setup
+    _, state = _add_mod(config, State(), tmp_path, name="moda")
+    download_link = game_target / "download"
+    assert not download_link.exists()
+    deploy_game(config, state, "kcd2")
+    assert not download_link.exists()
+    assert not (game_target / "moda.zip").exists()
 
 
 def test_deploy_default_target_for_most_mods(
@@ -221,11 +238,11 @@ def test_created_dirs_lifecycle(
     tmp_path: Path,
 ) -> None:
     config, game_target, _ = deploy_setup
-    source = tmp_path / "incoming" / "nested"
-    nested_dir = source / "sub"
-    nested_dir.mkdir(parents=True)
-    (nested_dir / "data.txt").write_text("mod", encoding="utf-8")
-    state, _, _ = import_mod(config, State(), source, game_id="kcd2", name="nested")
+    archive = tmp_path / "incoming" / "nested.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("nested/sub/data.txt", "mod")
+    state, _, _ = import_mod(config, State(), archive, game_id="kcd2", name="nested")
     deployed, _ = deploy_game(config, state, "kcd2")
     created = game_target / "sub"
     assert created.is_dir()
@@ -391,13 +408,12 @@ def _add_kcd2_mod(
     *,
     name: str,
 ) -> State:
-    source = tmp_path / "incoming" / name
-    source.mkdir(parents=True)
-    (source / "mod.manifest").write_text("<kcd_mod/>", encoding="utf-8")
-    data_dir = source / "Data"
-    data_dir.mkdir()
-    (data_dir / f"{name}.pak").write_bytes(b"pak")
-    updated, _, _ = import_mod(config, state, source, game_id="kcd2")
+    archive = tmp_path / "incoming" / f"{name}.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(f"{name}/mod.manifest", "<kcd_mod/>")
+        zf.writestr(f"{name}/Data/{name}.pak", b"pak")
+    updated, _, _ = import_mod(config, state, archive, game_id="kcd2", name=name)
     return updated
 
 
@@ -446,10 +462,12 @@ def test_flat_deploy_loose_pak(
         targets=[paks_target],
         deploy_layout="flat",
     )
-    source = tmp_path / "incoming" / "broom"
-    source.mkdir(parents=True)
-    (source / "zBroom_P.pak").write_bytes(b"pak")
-    updated, record, _ = import_mod(config, State(), source, game_id="hogwarts")
+    pak = tmp_path / "incoming" / "zBroom_P.pak"
+    pak.parent.mkdir(parents=True)
+    pak.write_bytes(b"pak")
+    updated, record, _ = import_mod(
+        config, State(), pak, game_id="hogwarts", name="broom"
+    )
     deploy_game(config, updated, "hogwarts")
     link = paks_target / "zBroom_P.pak"
     assert link.is_symlink()
@@ -470,11 +488,16 @@ def test_mirror_deploy_preserves_game_relative_paths(
         targets=[game_root],
         deploy_layout="mirror",
     )
-    source = tmp_path / "incoming" / "betterhud"
-    pak_dir = source / "Content" / "Paks" / "~mods"
-    pak_dir.mkdir(parents=True)
-    (pak_dir / "000_BetterHUD_P.pak").write_bytes(b"pak")
-    updated, record, _ = import_mod(config, State(), source, game_id="oblivion")
+    archive = tmp_path / "incoming" / "betterhud.zip"
+    archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(
+            "betterhud/Content/Paks/~mods/000_BetterHUD_P.pak",
+            b"pak",
+        )
+    updated, record, _ = import_mod(
+        config, State(), archive, game_id="oblivion", name="betterhud"
+    )
     deploy_game(config, updated, "oblivion")
     link = game_root / "Content" / "Paks" / "~mods" / "000_BetterHUD_P.pak"
     assert link.is_symlink()

@@ -85,29 +85,57 @@ Remove secondary deploy target(s). Fails if any mod references that index.
 
 ## Mod library
 
+Each mod is stored as a **package directory** under the game library:
+
+```text
+library/<subpath>/<modname>/
+  download/<original-nexus-file>.zip
+  mod.manifest
+  Data/...
+```
+
+`lmm add` imports Nexus download files (`.zip`, `.7z`, `.rar`, or supported loose files like `.pak`), stores the original in `download/`, extracts archives into the package root, and records `download_path` for Nexus identify.
+
 ### `lmm add <name_or_path> --game <id>`
 
-Import or register a mod directory.
+Import a Nexus download file or register an existing package directory.
 
 | Argument / option | Required | Description |
 |-------------------|----------|-------------|
-| `<name_or_path>` | yes | Mod directory path, or bare mod name under the game's library dir |
+| `<name_or_path>` | yes | Download file, directory of downloads, or library package path |
 | `--game` | yes | Game profile id |
-| `--name` | no | Mod name (default: directory name) |
-| `--mod-id` | no | Pre-set Nexus mod id |
+| `--name` | no | Mod name (default: inner archive folder or file stem) |
+| `--mod-id` | no | Link to Nexus mod id at import time |
+| `--mod-url` | no | Link using a Nexus mod page URL at import time |
 | `--target-index` | no | Deploy to `targets[n]` instead of default |
 | `--target-path` | no | Deploy to an absolute path instead of default |
-| `--move` | no | Move mod tree into library instead of copying (outside library only) |
-| `--all` | no | Import each immediate subdirectory as a separate mod |
+| `--move` | no | Move download into library instead of copying |
+| `--all` | no | Import each top-level download file in a directory |
 
-Use only one of `--target-index` or `--target-path`. With `--all`, do not pass `--name`, `--mod-id`, or target overrides.
+Use only one of `--target-index` or `--target-path`. With `--all`, do not pass `--name`, `--mod-id`, `--mod-url`, or target overrides.
 
-When `--all` is set, each immediate child **directory** becomes a mod (name = directory name). Top-level **files** (archives, readme) are skipped. Already-registered mods are skipped. Exits **1** only when an import fails (skips are reported but non-fatal). Honors `--dry-run` and `--json`.
+When `--all` is set, each top-level **download file** becomes a mod. Subdirectories and unsupported files are skipped. Already-registered mods are skipped. Exits **1** only when an import fails. Honors `--dry-run` and `--json`.
 
 ```bash
-lmm add /path/to/mod --game kcd2
-lmm add easysharpening --game kcd2   # when already in library
+lmm add ~/Downloads/mod.zip --game kcd2
+lmm add easysharpening --game kcd2   # existing package in library
 lmm add ~/Downloads/kcd2-batch --game kcd2 --all
+lmm add mod.zip --game kcd2 --mod-url https://www.nexusmods.com/.../mods/68
+```
+
+### `lmm mod link <mod>`
+
+Manually link a mod to Nexus when automatic identify fails.
+
+| Option | Description |
+|--------|-------------|
+| `--game` | Disambiguate mod name |
+| `--mod-id` | Nexus mod id |
+| `--url` | Nexus mod page URL |
+
+```bash
+lmm mod link easysharpening --game kcd2 --url https://www.nexusmods.com/kingdomcomedeliverance2/mods/68
+lmm mod link easysharpening --game kcd2 --mod-id 68
 ```
 
 ### `lmm list [game]`
@@ -166,11 +194,11 @@ Requires a valid Nexus API key. No files are downloaded.
 
 ### `lmm identify <game>`
 
-For mods missing `nexus_mod_id`, hash the primary file and search Nexus via `md5_search`. Fills `nexus_mod_id`, `file_id`, `installed_version`, and `file_md5` in state.
+For mods missing `nexus_mod_id`, hash the stored Nexus download file (`download_path`) and search via `md5_search`. If that fails, tries matching the mod name against your Nexus tracked mods list. Fills `nexus_mod_id`, `file_id`, `installed_version`, and `file_md5` in state.
 
-Reports skipped mods (`no_hashable_file`, `no_nexus_match`) and per-mod API failures. Exits **1** if any failures or unmatched mods remain (successful mods are still saved).
+Reports skipped mods (`no_download_file`, `no_nexus_match`) and per-mod API failures. Exits **1** if any mod in the game remains unlinked after the run (use `lmm mod link` for stragglers).
 
-`--dry-run` lists mods that would be identified and their primary files locally; no API calls or state writes.
+`--dry-run` lists mods that would be identified and their download files locally; no API calls or state writes.
 
 ### `lmm check <game>`
 
