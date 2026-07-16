@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,17 @@ from typer.testing import CliRunner
 from lmm.config import Config, ConfigStore, add_game_profile
 from lmm.library import import_mod
 from lmm.state import State, StateStore
+
+
+def make_mod_zip(
+    path: Path,
+    mod_name: str,
+    *,
+    inner_file: str = "file.txt",
+    content: str = "x",
+) -> None:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"{mod_name}/{inner_file}", content)
 
 
 @pytest.fixture
@@ -75,18 +87,19 @@ def setup_kcd2_mod(
     state_store = StateStore(data_dir / "state.json")
     config = config_store.load()
     state = state_store.load()
-    mod_source = data_dir / (source_name or mod_name)
-    mod_source.mkdir(exist_ok=True)
-    (mod_source / "a.txt").write_text("a", encoding="utf-8")
-    updated_state, _, _ = import_mod(
+    name = source_name or mod_name
+    archive = data_dir / f"{name}.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(f"{mod_name}/a.txt", "a")
+    updated_state, record, _ = import_mod(
         config,
         state,
-        mod_source,
+        archive,
         game_id="kcd2",
         name=mod_name if source_name else None,
     )
     state_store.save(updated_state)
-    return mod_source
+    return record.source_path
 
 
 @pytest.fixture

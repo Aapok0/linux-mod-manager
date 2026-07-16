@@ -126,6 +126,19 @@ def run_doctor(
                 ),
             )
 
+        if mod.nexus_mod_id is None:
+            checks.append(
+                DoctorCheck(
+                    name=f"mod.{mod.game}/{mod.name}.nexus",
+                    status="warning",
+                    message=(
+                        f"Mod {mod.game}/{mod.name} is not linked to Nexus; "
+                        f"run 'lmm mod link {mod.name} --url …' or "
+                        f"'lmm identify {mod.game}'"
+                    ),
+                ),
+            )
+
         profile = config.games.get(mod.game)
         if profile is None:
             continue

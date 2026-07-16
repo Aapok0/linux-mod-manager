@@ -154,6 +154,7 @@ class NexusClient:
         use_cache: bool = True,
         ttl_seconds: int | None = None,
         retries: int = 3,
+        not_found_ok: bool = False,
     ) -> Any:
         if use_cache:
             cached = self._read_cached(endpoint, params)
@@ -188,6 +189,8 @@ class NexusClient:
                 time.sleep(0.3 * (2**attempt))
                 continue
             if response.status_code >= 400:
+                if not_found_ok and response.status_code == 404:
+                    return None
                 msg = (
                     f"Nexus request failed with HTTP {response.status_code}: {endpoint}"
                 )
@@ -242,11 +245,24 @@ class NexusClient:
         data = self.get_json(
             f"/v1/games/{game_domain}/mods/md5_search/{md5_hash}.json",
             ttl_seconds=CACHE_TTL_MD5_SEARCH,
+            not_found_ok=True,
         )
+        if data is None:
+            return []
         if isinstance(data, list):
             return [item for item in data if isinstance(item, dict)]
         if isinstance(data, dict):
             results = data.get("results")
             if isinstance(results, list):
                 return [item for item in results if isinstance(item, dict)]
+        return []
+
+    def tracked_mods(self) -> list[dict[str, Any]]:
+        data = self.get_json("/v1/user/tracked_mods.json")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            tracked = data.get("tracked_mods")
+            if isinstance(tracked, list):
+                return [item for item in tracked if isinstance(item, dict)]
         return []

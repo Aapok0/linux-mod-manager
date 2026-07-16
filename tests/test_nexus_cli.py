@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,27 @@ from typer.testing import CliRunner
 from fixtures.nexus import FailingFirstMd5Client, HappyNexusClient
 from lmm.cli import app
 from lmm.state import StateStore
+
+
+def _add_mod_zip(data_dir: Path, name: str) -> Path:
+    archive = data_dir / "incoming" / f"{name}.zip"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr(f"{name}/file.txt", name)
+    return archive
+
+
+def _add_mod_zip_cli(
+    runner: CliRunner,
+    cli_args: list[str],
+    data_dir: Path,
+    name: str,
+) -> None:
+    archive = _add_mod_zip(data_dir, name)
+    runner.invoke(
+        app,
+        [*cli_args, "add", str(archive), "--game", "kcd2"],
+    )
 
 
 def test_identify_and_check_commands(
@@ -22,10 +44,7 @@ def test_identify_and_check_commands(
     monkeypatch.setenv("NEXUS_API_KEY", "secret")
     monkeypatch.setattr("lmm.cli.NexusClient", HappyNexusClient)
 
-    source = data_dir / "incoming" / "moda"
-    source.mkdir(parents=True)
-    (source / "file.txt").write_text("abc", encoding="utf-8")
-    runner.invoke(app, [*cli_args, "add", str(source), "--game", "kcd2"])
+    _add_mod_zip_cli(runner, cli_args, data_dir, "moda")
 
     identify = runner.invoke(app, [*cli_args, "identify", "kcd2"])
     assert identify.exit_code == 0, identify.output
@@ -48,10 +67,7 @@ def test_identify_requires_key(
 ) -> None:
     monkeypatch.delenv("NEXUS_API_KEY", raising=False)
 
-    source = data_dir / "incoming" / "moda"
-    source.mkdir(parents=True)
-    (source / "file.txt").write_text("abc", encoding="utf-8")
-    runner.invoke(app, [*cli_args, "add", str(source), "--game", "kcd2"])
+    _add_mod_zip_cli(runner, cli_args, data_dir, "moda")
 
     identify = runner.invoke(app, [*cli_args, "identify", "kcd2"])
     assert identify.exit_code == 1
@@ -83,10 +99,7 @@ def test_identify_continues_after_per_mod_failure(
     monkeypatch.setattr("lmm.cli.NexusClient", FailingFirstMd5Client)
 
     for name in ("moda", "modb"):
-        source = data_dir / "incoming" / name
-        source.mkdir(parents=True)
-        (source / "file.txt").write_text(name, encoding="utf-8")
-        runner.invoke(app, [*cli_args, "add", str(source), "--game", "kcd2"])
+        _add_mod_zip_cli(runner, cli_args, data_dir, name)
 
     identify = runner.invoke(app, [*cli_args, "identify", "kcd2"])
     assert identify.exit_code == 1, identify.output
@@ -112,10 +125,7 @@ def test_identify_dry_run_skips_nexus_and_state(
 
     monkeypatch.setattr("lmm.cli.NexusClient", fail_if_called)
 
-    source = data_dir / "incoming" / "moda"
-    source.mkdir(parents=True)
-    (source / "file.txt").write_text("abc", encoding="utf-8")
-    runner.invoke(app, [*cli_args, "add", str(source), "--game", "kcd2"])
+    _add_mod_zip_cli(runner, cli_args, data_dir, "moda")
 
     before = StateStore(data_dir / "state.json").load()
     identify = runner.invoke(app, [*cli_args, "--dry-run", "identify", "kcd2"])
@@ -136,10 +146,7 @@ def test_identify_json_reports_failures_with_exit_one(
     monkeypatch.setenv("NEXUS_API_KEY", "secret")
     monkeypatch.setattr("lmm.cli.NexusClient", FailingFirstMd5Client)
 
-    source = data_dir / "incoming" / "moda"
-    source.mkdir(parents=True)
-    (source / "file.txt").write_text("abc", encoding="utf-8")
-    runner.invoke(app, [*cli_args, "add", str(source), "--game", "kcd2"])
+    _add_mod_zip_cli(runner, cli_args, data_dir, "moda")
 
     identify = runner.invoke(app, [*cli_args, "--json", "identify", "kcd2"])
     assert identify.exit_code == 1, identify.output
@@ -161,10 +168,7 @@ def test_check_dry_run_smoke(
 
     monkeypatch.setattr("lmm.cli.NexusClient", fail_if_called)
 
-    source = data_dir / "incoming" / "moda"
-    source.mkdir(parents=True)
-    (source / "file.txt").write_text("abc", encoding="utf-8")
-    runner.invoke(app, [*cli_args, "add", str(source), "--game", "kcd2"])
+    _add_mod_zip_cli(runner, cli_args, data_dir, "moda")
 
     check = runner.invoke(app, [*cli_args, "--dry-run", "check", "kcd2"])
     assert check.exit_code == 0, check.output

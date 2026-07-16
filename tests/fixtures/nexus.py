@@ -67,6 +67,9 @@ class FakeNexusClient:
             }
         ]
 
+    def tracked_mods(self) -> list[dict[str, Any]]:
+        return []
+
 
 class HappyNexusClient(FakeNexusClient):
     """Always succeeds on md5_search with mod_id 99."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from pathlib import Path
 
 from typer.testing import CliRunner
@@ -10,6 +11,11 @@ from typer.testing import CliRunner
 from lmm.cli import app
 from lmm.config import ConfigStore
 from lmm.state import StateStore
+
+
+def _make_mod_zip(path: Path, mod_name: str, *, inner_file: str, content: str) -> None:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"{mod_name}/{inner_file}", content)
 
 
 def test_p1_game_add_and_list(
@@ -39,13 +45,18 @@ def test_p1_add_mod_and_list(
     cli_args: list[str],
     kcd2_p1_profile: None,
 ) -> None:
-    mod_source = data_dir / "incoming" / "easysharpening"
-    mod_source.mkdir(parents=True)
-    (mod_source / "mod.manifest").write_text("{}", encoding="utf-8")
+    archive = data_dir / "incoming" / "easysharpening.zip"
+    archive.parent.mkdir(parents=True)
+    _make_mod_zip(
+        archive,
+        "easysharpening",
+        inner_file="mod.manifest",
+        content="{}",
+    )
 
     add_result = runner.invoke(
         app,
-        [*cli_args, "add", str(mod_source), "--game", "kcd2"],
+        [*cli_args, "add", str(archive), "--game", "kcd2"],
     )
     assert add_result.exit_code == 0, add_result.output
 
@@ -53,6 +64,7 @@ def test_p1_add_mod_and_list(
     assert len(state.mods) == 1
     assert state.mods[0].name == "easysharpening"
     assert state.mods[0].game == "kcd2"
+    assert state.mods[0].download_path is not None
 
     list_result = runner.invoke(
         app,
@@ -71,9 +83,9 @@ def test_mod_list_accepts_positional_game(
     kcd2_profile_minimal: None,
     data_dir: Path,
 ) -> None:
-    mod_source = data_dir / "moddir"
-    mod_source.mkdir()
-    runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
+    archive = data_dir / "moddir.zip"
+    _make_mod_zip(archive, "moddir", inner_file="file.txt", content="x")
+    runner.invoke(app, [*cli_args, "add", str(archive), "--game", "kcd2"])
 
     list_result = runner.invoke(app, [*cli_args, "--json", "list", "kcd2"])
     assert list_result.exit_code == 0, list_result.output
@@ -88,9 +100,9 @@ def test_config_and_state_round_trip_via_cli(
     cli_args: list[str],
     kcd2_profile_minimal: None,
 ) -> None:
-    mod_source = data_dir / "moddir"
-    mod_source.mkdir()
-    runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
+    archive = data_dir / "moddir.zip"
+    _make_mod_zip(archive, "moddir", inner_file="file.txt", content="x")
+    runner.invoke(app, [*cli_args, "add", str(archive), "--game", "kcd2"])
 
     config = ConfigStore(data_dir / "config.toml").load()
     state = StateStore(data_dir / "state.json").load()

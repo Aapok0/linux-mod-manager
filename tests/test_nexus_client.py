@@ -69,6 +69,19 @@ def test_md5_search_reads_results_wrapper(tmp_path) -> None:
     assert matches == [{"mod_id": 10}]
 
 
+def test_md5_search_404_returns_empty(tmp_path) -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"error": "not found"})
+
+    with NexusClient(
+        api_key="secret",
+        cache_path=tmp_path / "cache.json",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        matches = client.md5_search("kcd2", "deadbeef")
+    assert matches == []
+
+
 def test_cache_hit_avoids_second_request(tmp_path) -> None:
     calls = {"count": 0}
 

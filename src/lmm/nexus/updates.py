@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -11,9 +10,9 @@ from typing import Any
 
 from lmm.config import Config, ConfigError
 from lmm.nexus.client import NexusClient, NexusError
+from lmm.nexus.link import LinkError, link_mod_record, match_tracked_mod
+from lmm.nexus.updates_hash import _file_md5, _pick_md5_match
 from lmm.state import ModRecord, State
-
-ARCHIVE_SUFFIXES = frozenset({".zip", ".7z", ".rar", ".pak", ".ba2", ".mpmod"})
 
 
 @dataclass
@@ -82,65 +81,6 @@ def _extract_str(mapping: dict[str, Any], *keys: str) -> str | None:
     return None
 
 
-def _pick_primary_file(mod_source: Path) -> Path | None:
-    files = [path for path in mod_source.rglob("*") if path.is_file()]
-    if not files:
-        return None
-    archives = [path for path in files if path.suffix.lower() in ARCHIVE_SUFFIXES]
-    candidates = archives if archives else files
-    return max(candidates, key=lambda item: item.stat().st_size)
-
-
-def _entry_file_size(entry: dict[str, Any]) -> int | None:
-    file_section = entry.get("file_details")
-    if isinstance(file_section, dict):
-        size = _extract_int(file_section, "size", "file_size")
-        if size is not None:
-            return size
-    return _extract_int(entry, "size", "file_size")
-
-
-def _is_main_category(entry: dict[str, Any]) -> bool:
-    category = _extract_str(entry, "category_name", "category")
-    if category and category.upper() == "MAIN":
-        return True
-    file_section = entry.get("file_details")
-    if isinstance(file_section, dict):
-        nested = _extract_str(file_section, "category_name", "category")
-        return bool(nested and nested.upper() == "MAIN")
-    return False
-
-
-def _pick_md5_match(matches: list[dict[str, Any]], local_size: int) -> dict[str, Any]:
-    if not matches:
-        msg = "matches must not be empty"
-        raise ValueError(msg)
-    sized = [(entry, _entry_file_size(entry)) for entry in matches]
-    if all(size is None for _, size in sized):
-        return matches[0]
-    exact = [entry for entry, size in sized if size == local_size]
-    if len(exact) == 1:
-        return exact[0]
-    if len(exact) > 1:
-        main_matches = [entry for entry in exact if _is_main_category(entry)]
-        if len(main_matches) == 1:
-            return main_matches[0]
-        return exact[0]
-    with_size = [(entry, size) for entry, size in sized if size is not None]
-    return min(with_size, key=lambda item: abs(item[1] - local_size))[0]
-
-
-def _file_md5(path: Path) -> str:
-    digest = hashlib.md5()  # noqa: S324 - required by Nexus md5_search
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _entry_mod_id(entry: dict[str, Any]) -> int | None:
     mod_section = entry.get("mod")
     if isinstance(mod_section, dict):
@@ -168,6 +108,39 @@ def _entry_version(entry: dict[str, Any]) -> str | None:
     return _extract_str(entry, "version")
 
 
+def _identify_download_path(mod: ModRecord) -> Path | None:
+    if mod.download_path is None:
+        return None
+    path = mod.download_path.resolve()
+    if path.is_file():
+        return path
+    return None
+
+
+def _apply_md5_match(
+    mod: ModRecord,
+    candidate: Path,
+    matches: list[dict[str, Any]],
+) -> ModRecord | None:
+    if not matches:
+        return None
+    chosen = _pick_md5_match(matches, candidate.stat().st_size)
+    nexus_mod_id = _entry_mod_id(chosen)
+    if nexus_mod_id is None:
+        return None
+    file_id = _entry_file_id(chosen)
+    version = _entry_version(chosen)
+    md5_hash = mod.file_md5 or _file_md5(candidate)
+    return mod.model_copy(
+        update={
+            "file_md5": md5_hash,
+            "nexus_mod_id": nexus_mod_id,
+            "file_id": file_id,
+            "installed_version": version or mod.installed_version,
+        }
+    )
+
+
 def identify_mods(
     config: Config,
     state: State,
@@ -185,14 +158,18 @@ def identify_mods(
     results: list[IdentifyResult] = []
     failures: list[IdentifyFailure] = []
     skips: list[IdentifySkip] = []
+    tracked: list[dict[str, Any]] | None = None
+
     for index, mod in enumerate(updated.mods):
         if mod.game != game_id or mod.nexus_mod_id is not None:
             continue
         mod_ref = _mod_ref(mod)
-        candidate = _pick_primary_file(mod.source_path.resolve())
+        candidate = _identify_download_path(mod)
         if candidate is None:
-            skips.append(IdentifySkip(mod_ref=mod_ref, reason="no_hashable_file"))
+            skips.append(IdentifySkip(mod_ref=mod_ref, reason="no_download_file"))
             continue
+
+        updated_mod: ModRecord | None = None
         if on_progress:
             on_progress(mod_ref, "hashing")
         md5_hash = mod.file_md5 or _file_md5(candidate)
@@ -203,30 +180,45 @@ def identify_mods(
         except NexusError as exc:
             failures.append(IdentifyFailure(mod_ref=mod_ref, error=str(exc)))
             continue
-        if not matches:
+        updated_mod = _apply_md5_match(mod, candidate, matches)
+
+        if updated_mod is None:
+            if tracked is None:
+                try:
+                    tracked = client.tracked_mods()
+                except NexusError as exc:
+                    failures.append(
+                        IdentifyFailure(
+                            mod_ref=mod_ref,
+                            error=f"tracked_mods failed: {exc}",
+                        )
+                    )
+                    continue
+            if on_progress:
+                on_progress(mod_ref, "matching tracked mods")
+            tracked_id = match_tracked_mod(mod, tracked, profile.nexus_domain)
+            if tracked_id is not None:
+                try:
+                    updated_mod = link_mod_record(
+                        config,
+                        mod,
+                        client=client,
+                        mod_id=tracked_id,
+                    )
+                except (ConfigError, LinkError, NexusError) as exc:
+                    failures.append(IdentifyFailure(mod_ref=mod_ref, error=str(exc)))
+                    continue
+
+        if updated_mod is None:
             skips.append(IdentifySkip(mod_ref=mod_ref, reason="no_nexus_match"))
             continue
-        chosen = _pick_md5_match(matches, candidate.stat().st_size)
-        nexus_mod_id = _entry_mod_id(chosen)
-        if nexus_mod_id is None:
-            skips.append(IdentifySkip(mod_ref=mod_ref, reason="no_nexus_match"))
-            continue
-        file_id = _entry_file_id(chosen)
-        version = _entry_version(chosen)
-        updated_mod = mod.model_copy(
-            update={
-                "file_md5": md5_hash,
-                "nexus_mod_id": nexus_mod_id,
-                "file_id": file_id,
-                "installed_version": version or mod.installed_version,
-            }
-        )
+
         updated.mods[index] = updated_mod
         results.append(
             IdentifyResult(
                 mod_ref=_mod_ref(updated_mod),
-                nexus_mod_id=nexus_mod_id,
-                file_id=file_id,
+                nexus_mod_id=updated_mod.nexus_mod_id or 0,
+                file_id=updated_mod.file_id,
                 installed_version=updated_mod.installed_version,
             )
         )
@@ -246,9 +238,17 @@ def plan_identify(
     for mod in state.mods:
         if mod.game != game_id or mod.nexus_mod_id is not None:
             continue
-        candidate = _pick_primary_file(mod.source_path.resolve())
+        candidate = _identify_download_path(mod)
         planned.append(IdentifyPlanItem(mod_ref=_mod_ref(mod), source_file=candidate))
     return planned
+
+
+def unlinked_mods(state: State, game_id: str) -> list[ModRecord]:
+    return [
+        mod
+        for mod in state.mods
+        if mod.game == game_id and mod.nexus_mod_id is None
+    ]
 
 
 def plan_check(

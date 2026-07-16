@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -97,13 +98,14 @@ def test_import_mod_rejects_traversal_name(
         nexus_domain="game",
         targets=[tmp_path / "target"],
     )
-    source = tmp_path / "external-mod"
-    source.mkdir()
+    archive = tmp_path / "external-mod.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("mod/file.txt", "x")
     with pytest.raises(LibraryError, match="mod name"):
         import_mod(
             config,
             State(),
-            source,
+            archive,
             game_id="kcd2",
             name="../../../escape",
         )
@@ -127,6 +129,8 @@ def test_import_mod_rejects_wrong_game_in_library(tmp_path: Path) -> None:
         library_subpath="Oblivion/Mods",
     )
     kcd_mod = library_root / "KingdomComeDeliverance2/Mods" / "easysharpening"
-    kcd_mod.mkdir(parents=True)
+    (kcd_mod / "download").mkdir(parents=True)
+    (kcd_mod / "download" / "mod.zip").write_bytes(b"zip")
+    (kcd_mod / "mod.manifest").write_text("x", encoding="utf-8")
     with pytest.raises(LibraryError, match="not under this game's directory"):
         import_mod(config, State(), kcd_mod, game_id="oblivion")

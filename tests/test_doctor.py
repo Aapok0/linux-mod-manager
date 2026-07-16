@@ -107,6 +107,26 @@ def test_doctor_missing_mod_source(tmp_path: Path) -> None:
     assert "missing" in mod_check.message.lower()
 
 
+def test_doctor_unlinked_mod_warning(tmp_path: Path) -> None:
+    config = _healthy_config(tmp_path)
+    source = tmp_path / "library" / "KCD2" / "Mods" / "moda"
+    source.mkdir(parents=True)
+    state = State(
+        mods=[
+            ModRecord(
+                name="moda",
+                game="kcd2",
+                source_path=source,
+            )
+        ]
+    )
+    config_store, state_store = _stores(tmp_path, config=config, state=state)
+    checks = run_doctor(config_store, state_store)
+    nexus = _check_by_name(checks, "mod.kcd2/moda.nexus")
+    assert nexus.status == "warning"
+    assert "not linked" in nexus.message.lower()
+
+
 def test_doctor_enabled_not_deployed(tmp_path: Path) -> None:
     config = _healthy_config(tmp_path)
     source = tmp_path / "library" / "KCD2" / "Mods" / "moda"

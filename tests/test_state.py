@@ -35,7 +35,7 @@ def test_state_round_trip(tmp_path: Path) -> None:
     )
     store.save(state)
     loaded = store.load()
-    assert loaded.schema_version == 1
+    assert loaded.schema_version == 2
     assert len(loaded.mods) == 1
     mod = loaded.mods[0]
     assert mod.name == "easysharpening"
@@ -120,7 +120,7 @@ def test_saved_json_has_schema_version(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     StateStore(path).save(State())
     raw = json.loads(path.read_text(encoding="utf-8"))
-    assert raw["schema_version"] == 1
+    assert raw["schema_version"] == 2
 
 
 def test_set_mod_enabled_toggles() -> None:
@@ -137,10 +137,32 @@ def test_set_mod_enabled_toggles() -> None:
     assert again.mods[0].enabled is True
 
 
+def test_migrate_v1_state_adds_download_path(tmp_path: Path) -> None:
+    path = tmp_path / "state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "mods": [
+                    {
+                        "name": "foo",
+                        "game": "kcd2",
+                        "source_path": "/tmp/foo",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = StateStore(path).load()
+    assert loaded.schema_version == 2
+    assert loaded.mods[0].download_path is None
+
+
 def test_malformed_mod_record_raises_state_error(tmp_path: Path) -> None:
     path = tmp_path / "state.json"
     path.write_text(
-        json.dumps({"schema_version": 1, "mods": [{"name": "x"}]}),
+        json.dumps({"schema_version": 2, "mods": [{"name": "x"}]}),
         encoding="utf-8",
     )
     with pytest.raises(StateError, match="Invalid state"):

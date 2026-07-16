@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from helpers import plain_cli_output
+from lmm.archive import DOWNLOAD_DIRNAME
 from lmm.cli import app
 from lmm.state import StateStore
+
+
+def _make_mod_zip(path: Path, mod_name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(f"{mod_name}/file.txt", "x")
+
+
+def _make_package_dir(mod_dir: Path, mod_name: str) -> None:
+    (mod_dir / DOWNLOAD_DIRNAME).mkdir(parents=True)
+    (mod_dir / DOWNLOAD_DIRNAME / f"{mod_name}.zip").write_bytes(b"zip")
+    (mod_dir / "file.txt").write_text("x", encoding="utf-8")
 
 
 def test_cli_deploy_and_undeploy(
@@ -18,10 +32,9 @@ def test_cli_deploy_and_undeploy(
     kcd2_profile: None,
     data_dir: Path,
 ) -> None:
-    mod_source = data_dir / "incoming" / "moda"
-    mod_source.mkdir(parents=True)
-    (mod_source / "file.txt").write_text("x", encoding="utf-8")
-    runner.invoke(app, [*cli_args, "add", str(mod_source), "--game", "kcd2"])
+    archive = data_dir / "incoming" / "moda.zip"
+    _make_mod_zip(archive, "moda")
+    runner.invoke(app, [*cli_args, "add", str(archive), "--game", "kcd2"])
 
     deploy = runner.invoke(app, [*cli_args, "deploy", "kcd2"])
     assert deploy.exit_code == 0, deploy.output
@@ -41,9 +54,8 @@ def test_cli_add_bare_mod_name(
     cli_args: list[str],
     kcd2_profile: None,
 ) -> None:
-    library_root = data_dir / "library"
-    mod_dir = library_root / "KCD2/Mods/easysharpening"
-    mod_dir.mkdir(parents=True)
+    mod_dir = data_dir / "library" / "KCD2" / "Mods" / "easysharpening"
+    _make_package_dir(mod_dir, "easysharpening")
 
     result = runner.invoke(app, [*cli_args, "add", "easysharpening", "--game", "kcd2"])
     assert result.exit_code == 0, result.output
@@ -190,16 +202,15 @@ def test_cli_add_target_path_and_deploy(
 ) -> None:
     custom = data_dir / "custom" / "deploy"
     custom.mkdir(parents=True)
-    mod_source = data_dir / "incoming" / "moda"
-    mod_source.mkdir(parents=True)
-    (mod_source / "file.txt").write_text("x", encoding="utf-8")
+    archive = data_dir / "incoming" / "moda.zip"
+    _make_mod_zip(archive, "moda")
 
     add = runner.invoke(
         app,
         [
             *cli_args,
             "add",
-            str(mod_source),
+            str(archive),
             "--game",
             "kcd2",
             "--target-path",
@@ -219,16 +230,15 @@ def test_cli_add_move_removes_source(
     kcd2_profile: None,
     data_dir: Path,
 ) -> None:
-    mod_source = data_dir / "incoming" / "movable"
-    mod_source.mkdir(parents=True)
-    (mod_source / "file.txt").write_text("x", encoding="utf-8")
+    archive = data_dir / "incoming" / "movable.zip"
+    _make_mod_zip(archive, "movable")
 
     result = runner.invoke(
         app,
-        [*cli_args, "add", str(mod_source), "--game", "kcd2", "--move"],
+        [*cli_args, "add", str(archive), "--game", "kcd2", "--move"],
     )
     assert result.exit_code == 0, result.output
-    assert not mod_source.exists()
+    assert not archive.exists()
     library_mod = data_dir / "library" / "KCD2" / "Mods" / "movable"
     assert library_mod.is_dir()
     assert (library_mod / "file.txt").exists()
@@ -280,16 +290,15 @@ def test_cli_add_rejects_target_index_and_path(
     kcd2_profile: None,
     data_dir: Path,
 ) -> None:
-    mod_source = data_dir / "incoming" / "moda"
-    mod_source.mkdir(parents=True)
-    (mod_source / "file.txt").write_text("x", encoding="utf-8")
+    archive = data_dir / "incoming" / "moda.zip"
+    _make_mod_zip(archive, "moda")
 
     result = runner.invoke(
         app,
         [
             *cli_args,
             "add",
-            str(mod_source),
+            str(archive),
             "--game",
             "kcd2",
             "--target-index",
@@ -313,9 +322,7 @@ def test_cli_add_all_imports_staging_directory(
     staging = data_dir / "incoming" / "batch"
     staging.mkdir(parents=True)
     for name in ("moda", "modb"):
-        mod_dir = staging / name
-        mod_dir.mkdir()
-        (mod_dir / "file.txt").write_text(name, encoding="utf-8")
+        _make_mod_zip(staging / f"{name}.zip", name)
 
     result = runner.invoke(
         app,
@@ -334,16 +341,15 @@ def test_cli_add_all_move_removes_staging_children(
 ) -> None:
     staging = data_dir / "incoming" / "batch"
     staging.mkdir(parents=True)
-    mod_dir = staging / "movable"
-    mod_dir.mkdir()
-    (mod_dir / "file.txt").write_text("x", encoding="utf-8")
+    archive = staging / "movable.zip"
+    _make_mod_zip(archive, "movable")
 
     result = runner.invoke(
         app,
         [*cli_args, "add", str(staging), "--game", "kcd2", "--all", "--move"],
     )
     assert result.exit_code == 0, result.output
-    assert not mod_dir.exists()
+    assert not archive.exists()
 
 
 def test_cli_add_all_json_payload(
@@ -354,7 +360,7 @@ def test_cli_add_all_json_payload(
 ) -> None:
     staging = data_dir / "incoming" / "batch"
     staging.mkdir(parents=True)
-    (staging / "moda").mkdir()
+    _make_mod_zip(staging / "moda.zip", "moda")
     (staging / "readme.txt").write_text("x", encoding="utf-8")
 
     result = runner.invoke(
@@ -365,7 +371,7 @@ def test_cli_add_all_json_payload(
     assert '"imported"' in result.output
     assert '"skipped"' in result.output
     assert '"failures"' in result.output
-    assert "not_a_directory" in result.output
+    assert "unsupported_file" in result.output
 
 
 def test_cli_add_all_rejects_name_override(
@@ -403,7 +409,7 @@ def test_cli_add_all_dry_run(
 ) -> None:
     staging = data_dir / "incoming" / "batch"
     staging.mkdir(parents=True)
-    (staging / "moda").mkdir()
+    _make_mod_zip(staging / "moda.zip", "moda")
 
     result = runner.invoke(
         app,
