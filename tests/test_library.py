@@ -71,9 +71,7 @@ def test_import_mod_registers_existing_package(
     config_with_game: Config,
     tmp_path: Path,
 ) -> None:
-    package = (
-        config_with_game.library_root / "KingdomComeDeliverance2/Mods" / "nointro"
-    )
+    package = config_with_game.library_root / "KingdomComeDeliverance2/Mods" / "nointro"
     (package / DOWNLOAD_DIRNAME).mkdir(parents=True)
     (package / DOWNLOAD_DIRNAME / "No Intro.zip").write_bytes(b"zip")
     (package / "mod.manifest").write_text("test", encoding="utf-8")
@@ -87,9 +85,9 @@ def test_import_mod_registers_existing_package(
     )
     assert action == ImportAction.REGISTERED
     assert record.source_path == package.resolve()
-    assert record.download_path == (
-        package / DOWNLOAD_DIRNAME / "No Intro.zip"
-    ).resolve()
+    assert (
+        record.download_path == (package / DOWNLOAD_DIRNAME / "No Intro.zip").resolve()
+    )
     assert len(updated_state.mods) == 1
 
 

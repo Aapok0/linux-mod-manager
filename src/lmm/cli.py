@@ -149,9 +149,7 @@ def _identify_degraded(
         return True
     if unlinked_mods(state, game_id):
         return True
-    return any(
-        skip.reason in ("no_download_file", "no_nexus_match") for skip in skips
-    )
+    return any(skip.reason in ("no_download_file", "no_nexus_match") for skip in skips)
 
 
 def _deploy_apply_hint(game: str) -> None:
@@ -527,8 +525,7 @@ def mod_add(
         typer.Option(
             "--all",
             help=(
-                "Import each top-level download file "
-                "(.zip, .7z, .rar, loose mod file)"
+                "Import each top-level download file (.zip, .7z, .rar, loose mod file)"
             ),
         ),
     ] = False,

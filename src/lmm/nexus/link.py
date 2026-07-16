@@ -72,18 +72,12 @@ def _match_download_file(
         return None
     local_md5 = _file_md5(download_path)
     local_size = download_path.stat().st_size
-    md5_matches = [
-        entry
-        for entry in files
-        if _file_entry_md5(entry) == local_md5
-    ]
+    md5_matches = [entry for entry in files if _file_entry_md5(entry) == local_md5]
     if len(md5_matches) == 1:
         return md5_matches[0]
     if md5_matches:
         sized = [
-            entry
-            for entry in md5_matches
-            if _file_entry_size(entry) == local_size
+            entry for entry in md5_matches if _file_entry_size(entry) == local_size
         ]
         if len(sized) == 1:
             return sized[0]
@@ -91,9 +85,7 @@ def _match_download_file(
         if len(main) == 1:
             return main[0]
         return md5_matches[0]
-    size_matches = [
-        entry for entry in files if _file_entry_size(entry) == local_size
-    ]
+    size_matches = [entry for entry in files if _file_entry_size(entry) == local_size]
     if len(size_matches) == 1:
         return size_matches[0]
     return None

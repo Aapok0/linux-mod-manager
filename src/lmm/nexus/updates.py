@@ -245,9 +245,7 @@ def plan_identify(
 
 def unlinked_mods(state: State, game_id: str) -> list[ModRecord]:
     return [
-        mod
-        for mod in state.mods
-        if mod.game == game_id and mod.nexus_mod_id is None
+        mod for mod in state.mods if mod.game == game_id and mod.nexus_mod_id is None
     ]
 
 
