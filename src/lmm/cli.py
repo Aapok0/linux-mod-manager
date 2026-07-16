@@ -16,6 +16,7 @@ from rich.table import Table
 
 from lmm import __version__
 from lmm.config import (
+    Config,
     ConfigError,
     ConfigStore,
     DeployLayout,
@@ -23,7 +24,7 @@ from lmm.config import (
     add_game_target,
     remove_game_target,
 )
-from lmm.deploy import DeployError, deploy_game, remove_mod, undeploy_game
+from lmm.deploy import DeployError, deploy_game, deploy_mod, remove_mod, undeploy_game
 from lmm.doctor import doctor_has_errors, run_doctor
 from lmm.library import (
     ImportAction,
@@ -31,11 +32,16 @@ from lmm.library import (
     ImportResult,
     ImportSkip,
     LibraryError,
+    UpdateFailure,
+    UpdateResult,
+    UpdateSkip,
     import_mod,
     import_mods_from_directory,
     list_mods,
     mod_is_deployed,
     resolve_mod_source,
+    update_mod,
+    update_mods_from_directory,
 )
 from lmm.logging_config import setup_logging
 from lmm.nexus import NexusClient, NexusError
@@ -49,6 +55,7 @@ from lmm.nexus.updates import (
     unlinked_mods,
 )
 from lmm.state import (
+    State,
     StateError,
     StateStore,
     adjust_mod_targets_after_remove,
@@ -215,6 +222,68 @@ def _print_bulk_import_summary(
         console.print(f"Skipped: {item.path.name} ({item.reason})")
     for item in failures:
         console.print(f"FAIL: {item.name}: {item.error}")
+
+
+def _bulk_update_json_payload(
+    results: list[UpdateResult],
+    failures: list[UpdateFailure],
+    skips: list[UpdateSkip],
+) -> dict[str, object]:
+    return {
+        "updated": [
+            {
+                **item.record.model_dump(mode="json"),
+                "update_action": item.action.value,
+            }
+            for item in results
+        ],
+        "skipped": [{"path": str(item.path), "reason": item.reason} for item in skips],
+        "failures": [{"name": item.name, "error": item.error} for item in failures],
+    }
+
+
+def _print_bulk_update_summary(
+    *,
+    game: str,
+    dry_run: bool,
+    results: list[UpdateResult],
+    failures: list[UpdateFailure],
+    skips: list[UpdateSkip],
+) -> None:
+    prefix = "[dry-run] " if dry_run else ""
+    if results:
+        console.print(f"{prefix}Update {game}: {len(results)} mod(s) updated")
+    elif not failures and not skips:
+        console.print(f"{prefix}Update {game}: no mods updated")
+    for item in skips:
+        console.print(f"  SKIP {item.path.name}: {item.reason}")
+    for item in failures:
+        console.print(f"FAIL: {item.name}: {item.error}")
+
+
+def _redeploy_updated_mods(
+    config: Config,
+    state: State,
+    results: list[UpdateResult],
+    *,
+    dry_run: bool,
+) -> tuple[State, list[str]]:
+    failures: list[str] = []
+    updated_state = state
+    for item in results:
+        if not item.record.enabled:
+            continue
+        try:
+            updated_state, outcome = deploy_mod(
+                config,
+                updated_state,
+                item.record,
+                dry_run=dry_run,
+            )
+            failures.extend(outcome.conflicts)
+        except DeployError as exc:
+            failures.append(f"{item.record.name}: {exc}")
+    return updated_state, failures
 
 
 @app.callback()
@@ -628,6 +697,144 @@ def mod_add(
             typer.echo(json.dumps(payload, indent=2))
             return
         console.print(_import_action_message(action, record))
+
+    _handle_errors(run)
+
+
+@app.command("update")
+def mod_update(
+    ctx: typer.Context,
+    mod_or_dir: Annotated[
+        Path,
+        typer.Argument(
+            help="Mod name (single update) or directory of downloads (--all)"
+        ),
+    ],
+    game: Annotated[str, typer.Option("--game", help="Game profile id")],
+    download_file: Annotated[
+        Path | None,
+        typer.Argument(help="Nexus download file for a single mod update"),
+    ] = None,
+    all_mods: Annotated[
+        bool,
+        typer.Option(
+            "--all",
+            help="Update each top-level download file in the directory",
+        ),
+    ] = False,
+    only_updates: Annotated[
+        bool,
+        typer.Option(
+            "--only-updates",
+            help="Skip zips for mods not flagged by check",
+        ),
+    ] = False,
+    move: Annotated[
+        bool,
+        typer.Option(
+            "--move",
+            help="Move download into library instead of copying",
+        ),
+    ] = False,
+    no_deploy: Annotated[
+        bool,
+        typer.Option("--no-deploy", help="Skip redeploy after updates"),
+    ] = False,
+) -> None:
+    """Apply user-downloaded Nexus files to existing mod packages."""
+    if all_mods and download_file is not None:
+        raise typer.BadParameter("With --all, pass only the download directory")
+    if not all_mods and download_file is None:
+        raise typer.BadParameter(
+            "Pass mod name and download file, or use --all with a directory"
+        )
+
+    def run() -> None:
+        app_ctx = _ctx(ctx)
+        config_store = _config_store(app_ctx)
+        state_store = _state_store(app_ctx)
+        config = config_store.load()
+        state = state_store.load()
+        api_key = config_store.resolve_api_key(config)
+
+        def apply_updates(client: NexusClient | None) -> None:
+            nonlocal state
+            if all_mods:
+                parent = mod_or_dir.resolve()
+                updated_state, results, failures, skips = update_mods_from_directory(
+                    config,
+                    state,
+                    parent,
+                    game_id=game,
+                    copy=not move,
+                    only_updates=only_updates,
+                    dry_run=app_ctx.dry_run,
+                    client=client,
+                )
+            else:
+                assert download_file is not None
+                source = download_file.resolve()
+                mod = find_mod(state, str(mod_or_dir), default_game=game)
+                if only_updates and not mod.update_available:
+                    skips = [UpdateSkip(path=source, reason="not_flagged")]
+                    results = []
+                    failures = []
+                    updated_state = state
+                else:
+                    updated_state, record, _action = update_mod(
+                        config,
+                        state,
+                        mod,
+                        source,
+                        copy=not move,
+                        dry_run=app_ctx.dry_run,
+                        client=client,
+                    )
+                    results = [UpdateResult(record=record, action=_action)]
+                    failures = []
+                    skips = []
+
+            deploy_failures: list[str] = []
+            if results and not no_deploy:
+                updated_state, deploy_failures = _redeploy_updated_mods(
+                    config,
+                    updated_state,
+                    results,
+                    dry_run=app_ctx.dry_run,
+                )
+
+            if not app_ctx.dry_run:
+                state_store.save(updated_state)
+
+            if app_ctx.as_json:
+                payload = _bulk_update_json_payload(results, failures, skips)
+                if deploy_failures:
+                    payload["deploy_conflicts"] = deploy_failures
+                typer.echo(json.dumps(payload, indent=2))
+                if failures or deploy_failures:
+                    raise typer.Exit(1)
+                return
+
+            _print_bulk_update_summary(
+                game=game,
+                dry_run=app_ctx.dry_run,
+                results=results,
+                failures=failures,
+                skips=skips,
+            )
+            for conflict in deploy_failures:
+                console.print(f"DEPLOY CONFLICT: {conflict}")
+            if no_deploy and results and not app_ctx.dry_run:
+                _deploy_apply_hint(game)
+            if failures or deploy_failures:
+                raise typer.Exit(1)
+
+        if api_key:
+            with _nexus_client(app_ctx, config_store) as client:
+                client.validate_key()
+                apply_updates(client)
+        else:
+            apply_updates(None)
 
     _handle_errors(run)
 

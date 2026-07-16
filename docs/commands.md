@@ -123,6 +123,50 @@ lmm add ~/Downloads/kcd2-batch --game kcd2 --all
 lmm add mod.zip --game kcd2 --mod-url https://www.nexusmods.com/.../mods/68
 ```
 
+### `lmm update <mod_or_dir> [download_file] --game <id>`
+
+Apply user-downloaded Nexus files to existing mod packages in place. Preserves mod identity (`nexus_mod_id`, `target`, `enabled`, etc.), refreshes `download/` and the extracted tree, and redeploys updated enabled mods by default.
+
+| Argument / option | Required | Description |
+|-------------------|----------|-------------|
+| `<mod_or_dir>` | yes | Mod name (single update) or directory of downloads (`--all`) |
+| `[download_file]` | single only | Nexus download file for the named mod |
+| `--game` | yes | Game profile id |
+| `--all` | no | Update each top-level download file in a directory |
+| `--only-updates` | no | Skip zips for mods not flagged by `check` |
+| `--move` | no | Move download into library instead of copying |
+| `--no-deploy` | no | Skip redeploy after updates (default: redeploy) |
+
+Use `--all` with a directory only (no second positional). For a single mod, pass mod name and download file. Exits **1** on failures; skips are non-fatal. Honors `--dry-run` and `--json`.
+
+**Typical workflow:**
+
+```bash
+lmm check kcd2
+# download flagged mods from Nexus in browser
+lmm update ~/Downloads/KingdomComeDeliverance2/ --game kcd2 --all --only-updates
+```
+
+**Bulk `--all` behavior (file-driven):** only download files present in the directory are considered. Registered mods with no matching zip in the folder are left untouched (not an error, no skip line).
+
+| File in folder matches registered mod… | `--all` | `--all --only-updates` |
+|----------------------------------------|---------|-------------------------|
+| `update_available=true` | Apply update | Apply update |
+| `update_available=false` | Apply update (unless `already_current`) | Skip (`not_flagged`) |
+| Not registered | Skip (`not_registered`) | Skip (`not_registered`) |
+| Same MD5 as installed | Skip (`already_current`) | Skip (`already_current`) |
+
+Use `--only-updates` when the download folder may contain stale zips for mods already up to date. Omit it when the folder only contains fresh downloads.
+
+```bash
+lmm update easysharpening ~/Downloads/Easy\ Sharpening-68-1-2.zip --game kcd2
+lmm update ~/Downloads/KingdomComeDeliverance2/ --game kcd2 --all
+lmm update ~/Downloads/KingdomComeDeliverance2/ --game kcd2 --all --only-updates
+lmm update ~/Downloads/batch/ --game kcd2 --all --no-deploy
+```
+
+Nexus download API not used, since it's a paid feature — you supply files. Run `identify` and `check` first for Nexus metadata and update flags.
+
 ### `lmm mod link <mod>`
 
 Manually link a mod to Nexus when automatic identify fails.

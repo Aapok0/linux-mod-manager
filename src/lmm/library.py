@@ -14,16 +14,18 @@ from lmm.archive import (
     is_archive,
     is_download_file,
     is_loose_download,
+    parse_nexus_download_filename,
     peek_archive_root_name,
 )
 from lmm.config import Config
+from lmm.nexus.updates_hash import _file_md5
 from lmm.paths import (
     PathValidationError,
     path_within_root,
     resolve_under_root,
     validate_path_segment,
 )
-from lmm.state import ModRecord, State, add_mod_record
+from lmm.state import ModRecord, State, add_mod_record, update_mod_record
 
 
 class LibraryError(Exception):
@@ -129,6 +131,57 @@ def _store_download_file(
     return destination, ImportAction.MOVED
 
 
+def _replace_download_file(
+    source: Path,
+    package_root: Path,
+    *,
+    copy: bool,
+) -> tuple[Path, UpdateAction]:
+    download_dir = package_root / DOWNLOAD_DIRNAME
+    download_dir.mkdir(parents=True, exist_ok=True)
+    for entry in download_dir.iterdir():
+        if entry.is_file() and not entry.name.startswith("."):
+            entry.unlink()
+    destination = download_dir / source.name
+    if copy:
+        shutil.copy2(source, destination)
+        return destination, UpdateAction.COPIED
+    shutil.move(str(source), str(destination))
+    return destination, UpdateAction.MOVED
+
+
+def _wipe_package_content(package_root: Path) -> None:
+    for entry in package_root.iterdir():
+        if entry.name.startswith("."):
+            continue
+        if entry.name == DOWNLOAD_DIRNAME:
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
+
+def _populate_package_from_download(
+    download_path: Path,
+    package_root: Path,
+) -> None:
+    if is_archive(download_path):
+        try:
+            extract_archive(download_path, package_root)
+        except ArchiveError as exc:
+            raise LibraryError(str(exc)) from exc
+        return
+    if is_loose_download(download_path):
+        deploy_file = package_root / download_path.name
+        shutil.copy2(download_path, deploy_file)
+        return
+    msg = (
+        f"Unsupported download file type: {download_path.suffix or download_path.name}"
+    )
+    raise LibraryError(msg)
+
+
 def _import_file_package(
     config: Config,
     source: Path,
@@ -149,11 +202,7 @@ def _import_file_package(
         copy=copy,
     )
     if is_archive(download_path):
-        try:
-            extract_archive(download_path, package_root)
-        except ArchiveError as exc:
-            shutil.rmtree(package_root)
-            raise LibraryError(str(exc)) from exc
+        _populate_package_from_download(download_path, package_root)
         action = ImportAction.EXTRACTED
     elif is_loose_download(download_path):
         deploy_file = package_root / download_path.name
@@ -423,3 +472,299 @@ def list_mods(state: State, game_id: str | None = None) -> list[ModRecord]:
 
 def mod_is_deployed(mod: ModRecord) -> bool:
     return len(mod.deployed_links) > 0
+
+
+class UpdateAction(enum.StrEnum):
+    UPDATED = "updated"
+    COPIED = "copied"
+    MOVED = "moved"
+    EXTRACTED = "extracted"
+
+
+@dataclass
+class UpdateSkip:
+    path: Path
+    reason: str
+
+
+@dataclass
+class UpdateFailure:
+    name: str
+    error: str
+
+
+@dataclass
+class UpdateResult:
+    record: ModRecord
+    action: UpdateAction
+
+
+def _mods_for_game(state: State, game_id: str) -> list[ModRecord]:
+    return [mod for mod in state.mods if mod.game == game_id]
+
+
+def _find_mod_by_name(state: State, game_id: str, name: str) -> ModRecord | None:
+    matches = [mod for mod in _mods_for_game(state, game_id) if mod.name == name]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _match_download_file_to_mod(
+    state: State,
+    game_id: str,
+    source: Path,
+) -> ModRecord | list[ModRecord] | None:
+    mods = _mods_for_game(state, game_id)
+    try:
+        mod_name = _derive_mod_name(source, None)
+    except PathValidationError:
+        return None
+
+    name_matches = [mod for mod in mods if mod.name == mod_name]
+    if len(name_matches) == 1:
+        return name_matches[0]
+    if len(name_matches) > 1:
+        return name_matches
+
+    nexus_id = parse_nexus_download_filename(source)
+    if nexus_id is not None:
+        id_matches = [mod for mod in mods if mod.nexus_mod_id == nexus_id]
+        if len(id_matches) == 1:
+            return id_matches[0]
+        if len(id_matches) > 1:
+            return id_matches
+    return None
+
+
+def _download_is_current(mod: ModRecord, source: Path) -> bool:
+    new_md5 = _file_md5(source)
+    if mod.file_md5 and mod.file_md5.lower() == new_md5.lower():
+        return True
+    if mod.download_path is not None and mod.download_path.is_file():
+        return _file_md5(mod.download_path).lower() == new_md5.lower()
+    return False
+
+
+def refresh_mod_package(
+    mod: ModRecord,
+    source: Path,
+    *,
+    copy: bool = True,
+    dry_run: bool = False,
+) -> tuple[ModRecord, UpdateAction]:
+    source = source.resolve()
+    if not source.is_file():
+        msg = f"Download path is not a file: {source}"
+        raise LibraryError(msg)
+    if not is_download_file(source):
+        msg = (
+            f"Unsupported download file type: {source.suffix or source.name}. "
+            "Use a Nexus archive (.zip, .7z, .rar) or supported loose file."
+        )
+        raise LibraryError(msg)
+    if _download_is_current(mod, source):
+        msg = "Download file is identical to the installed package"
+        raise LibraryError(msg)
+
+    package_root = mod.source_path.resolve()
+    if not package_root.is_dir():
+        msg = f"Mod package does not exist: {package_root}"
+        raise LibraryError(msg)
+
+    download_path = package_root / DOWNLOAD_DIRNAME / source.name
+    file_md5 = _file_md5(source)
+    if dry_run:
+        return (
+            mod.model_copy(
+                update={
+                    "download_path": download_path,
+                    "file_md5": file_md5,
+                    "update_available": False,
+                }
+            ),
+            UpdateAction.EXTRACTED if is_archive(source) else UpdateAction.COPIED,
+        )
+
+    _wipe_package_content(package_root)
+    stored_path, file_action = _replace_download_file(
+        source,
+        package_root,
+        copy=copy,
+    )
+    _populate_package_from_download(stored_path, package_root)
+    action = (
+        UpdateAction.EXTRACTED
+        if is_archive(stored_path) or is_loose_download(stored_path)
+        else UpdateAction(file_action.value)
+    )
+    return (
+        mod.model_copy(
+            update={
+                "download_path": stored_path.resolve(),
+                "file_md5": file_md5,
+                "update_available": False,
+            }
+        ),
+        action,
+    )
+
+
+def apply_nexus_metadata_after_update(
+    config: Config,
+    mod: ModRecord,
+    *,
+    client: object | None = None,
+) -> ModRecord:
+    if client is None or mod.nexus_mod_id is None:
+        return mod
+    from lmm.nexus.client import NexusClient
+    from lmm.nexus.link import LinkError, link_mod_record
+
+    if not isinstance(client, NexusClient):
+        return mod
+    try:
+        linked = link_mod_record(
+            config,
+            mod,
+            client=client,
+            mod_id=mod.nexus_mod_id,
+        )
+    except LinkError:
+        return mod
+    return linked.model_copy(
+        update={
+            "update_available": False,
+            "latest_version": linked.installed_version or mod.latest_version,
+        }
+    )
+
+
+def update_mod(
+    config: Config,
+    state: State,
+    mod: ModRecord,
+    source: Path,
+    *,
+    copy: bool = True,
+    dry_run: bool = False,
+    client: object | None = None,
+) -> tuple[State, ModRecord, UpdateAction]:
+    if mod.game not in config.games:
+        msg = f"Unknown game profile: {mod.game}"
+        raise LibraryError(msg)
+
+    current_mod = _find_mod_by_name(state, mod.game, mod.name)
+    if current_mod is None:
+        msg = f"Mod not registered: {mod.game}/{mod.name}"
+        raise LibraryError(msg)
+
+    source = source.resolve()
+    if _download_is_current(current_mod, source):
+        msg = "Download file is identical to the installed package"
+        raise LibraryError(msg)
+
+    updated_state = state
+    if current_mod.deployed_links and not dry_run:
+        from lmm.deploy import undeploy_mod
+
+        updated_state, _ = undeploy_mod(
+            config,
+            updated_state,
+            current_mod,
+            dry_run=False,
+        )
+        refreshed = _find_mod_by_name(updated_state, mod.game, mod.name)
+        if refreshed is None:
+            msg = f"Mod not found after undeploy: {mod.game}/{mod.name}"
+            raise LibraryError(msg)
+        current_mod = refreshed
+
+    record, action = refresh_mod_package(
+        current_mod,
+        source,
+        copy=copy,
+        dry_run=dry_run,
+    )
+    record = apply_nexus_metadata_after_update(config, record, client=client)
+
+    if dry_run:
+        return state, record, action
+    updated_state = update_mod_record(updated_state, record)
+    return updated_state, record, action
+
+
+def update_mods_from_directory(
+    config: Config,
+    state: State,
+    parent: Path,
+    game_id: str,
+    *,
+    copy: bool = True,
+    only_updates: bool = False,
+    dry_run: bool = False,
+    client: object | None = None,
+) -> tuple[State, list[UpdateResult], list[UpdateFailure], list[UpdateSkip]]:
+    if game_id not in config.games:
+        msg = f"Unknown game profile: {game_id}"
+        raise LibraryError(msg)
+
+    parent = parent.resolve()
+    if not parent.exists():
+        msg = f"Mod path does not exist: {parent}"
+        raise LibraryError(msg)
+    if not parent.is_dir():
+        msg = f"Mod path is not a directory: {parent}"
+        raise LibraryError(msg)
+
+    updated = state.model_copy(deep=True)
+    results: list[UpdateResult] = []
+    failures: list[UpdateFailure] = []
+    skips: list[UpdateSkip] = []
+
+    for entry in sorted(parent.iterdir(), key=lambda path: path.name):
+        if entry.name.startswith("."):
+            skips.append(UpdateSkip(path=entry, reason="hidden"))
+            continue
+        if entry.is_dir():
+            skips.append(UpdateSkip(path=entry, reason="not_a_download_file"))
+            continue
+        if not entry.is_file():
+            continue
+        if not is_download_file(entry):
+            skips.append(UpdateSkip(path=entry, reason="unsupported_file"))
+            continue
+
+        match = _match_download_file_to_mod(updated, game_id, entry)
+        if match is None:
+            skips.append(UpdateSkip(path=entry, reason="not_registered"))
+            continue
+        if isinstance(match, list):
+            skips.append(UpdateSkip(path=entry, reason="ambiguous_match"))
+            continue
+
+        if only_updates and not match.update_available:
+            skips.append(UpdateSkip(path=entry, reason="not_flagged"))
+            continue
+        if _download_is_current(match, entry):
+            skips.append(UpdateSkip(path=entry, reason="already_current"))
+            continue
+
+        try:
+            updated, record, action = update_mod(
+                config,
+                updated,
+                match,
+                entry,
+                copy=copy,
+                dry_run=dry_run,
+                client=client,
+            )
+        except (LibraryError, ValueError) as exc:
+            failures.append(UpdateFailure(name=match.name, error=str(exc)))
+            continue
+        results.append(UpdateResult(record=record, action=action))
+
+    if dry_run:
+        return state, results, failures, skips
+    return updated, results, failures, skips

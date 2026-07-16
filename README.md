@@ -100,6 +100,12 @@ lmm identify kcd2   # match local files to Nexus mod ids
 lmm check kcd2      # report mods with newer versions
 ```
 
+Download flagged mods from Nexus in your browser, then apply them:
+
+```bash
+lmm update ~/Downloads/KingdomComeDeliverance2/ --game kcd2 --all --only-updates
+```
+
 ### 6. List mods
 
 ```bash
@@ -114,6 +120,8 @@ Shows installed version, latest Nexus version, and update status after `check`.
 |---------|---------|
 | `lmm game list` | List configured games |
 | `lmm list [game]` | List registered mods |
+| `lmm update <mod> <file> --game <id>` | Apply a downloaded Nexus file to an existing mod |
+| `lmm update <dir> --game <id> --all` | Bulk-apply downloads from a folder |
 | `lmm enable <mod>` / `lmm disable <mod>` | Toggle deployment (run `deploy` to apply) |
 | `lmm undeploy <game>` | Remove all symlinks recorded for a game |
 | `lmm game target add/list/remove` | Manage extra deploy directories |

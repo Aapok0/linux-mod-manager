@@ -419,3 +419,74 @@ def test_cli_add_all_dry_run(
     assert "Imported 1 mod(s)" in result.output
     state = StateStore(data_dir / "state.json").load()
     assert state.mods == []
+
+
+def test_cli_update_single_mod(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+    game_target: Path,
+    data_dir: Path,
+) -> None:
+    archive_v1 = data_dir / "incoming" / "moda.zip"
+    _make_mod_zip(archive_v1, "moda")
+    runner.invoke(app, [*cli_args, "add", str(archive_v1), "--game", "kcd2"])
+    runner.invoke(app, [*cli_args, "deploy", "kcd2"])
+
+    archive_v2 = data_dir / "incoming" / "moda-v2.zip"
+    with zipfile.ZipFile(archive_v2, "w") as zf:
+        zf.writestr("moda/file.txt", "updated")
+
+    result = runner.invoke(
+        app,
+        [
+            *cli_args,
+            "update",
+            "moda",
+            str(archive_v2),
+            "--game",
+            "kcd2",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (game_target / "file.txt").read_text(encoding="utf-8") == "updated"
+
+
+def test_cli_update_all_only_updates(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+    data_dir: Path,
+) -> None:
+    staging = data_dir / "incoming" / "batch"
+    staging.mkdir(parents=True)
+    _make_mod_zip(staging / "moda.zip", "moda")
+    _make_mod_zip(staging / "modb.zip", "modb")
+    runner.invoke(
+        app,
+        [*cli_args, "add", str(staging), "--game", "kcd2", "--all"],
+    )
+    state = StateStore(data_dir / "state.json").load()
+    state.mods[0] = state.mods[0].model_copy(update={"update_available": True})
+    StateStore(data_dir / "state.json").save(state)
+
+    updates = data_dir / "incoming" / "updates"
+    updates.mkdir(parents=True)
+    _make_mod_zip(updates / "moda.zip", "moda")
+    _make_mod_zip(updates / "modb.zip", "modb")
+
+    result = runner.invoke(
+        app,
+        [
+            *cli_args,
+            "update",
+            str(updates),
+            "--game",
+            "kcd2",
+            "--all",
+            "--only-updates",
+            "--no-deploy",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "SKIP modb.zip: not_flagged" in result.output
