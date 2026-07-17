@@ -19,7 +19,7 @@ from lmm.deploy import (
     undeploy_game,
 )
 from lmm.library import import_mod
-from lmm.state import ModRecord, State
+from lmm.state import DeployedLink, ModRecord, State
 
 
 @pytest.fixture
@@ -146,6 +146,25 @@ def test_deploy_skips_foreign_file(
     assert foreign.read_text(encoding="utf-8") == "real game file"
 
 
+def test_two_mods_collide_on_same_target_path(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, game_target, _ = deploy_setup
+    _, state = _add_mod(config, State(), tmp_path, name="moda")
+    # Second mod with identical relative path content.
+    archive = tmp_path / "incoming" / "modb.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("modb/data.txt", "other")
+    state, _, _ = import_mod(config, state, archive, game_id="kcd2", name="modb")
+    _, outcome = deploy_game(config, state, "kcd2")
+    # First wins; second reports conflict.
+    assert outcome.links_created == 1
+    assert len(outcome.conflicts) == 1
+    assert (game_target / "data.txt").is_symlink()
+    assert (game_target / "data.txt").read_text(encoding="utf-8") == "mod"
+
+
 def test_undeploy_removes_only_recorded_links(
     deploy_setup: tuple[Config, Path, Path],
     tmp_path: Path,
@@ -159,6 +178,49 @@ def test_undeploy_removes_only_recorded_links(
     assert outcome.links_removed == 1
     assert not link.exists()
     assert len(updated.mods[0].deployed_links) == 0
+
+
+def test_undeploy_removes_dangling_symlink(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, game_target, _ = deploy_setup
+    _, state = _add_mod(config, State(), tmp_path, name="moda")
+    deployed, _ = deploy_game(config, state, "kcd2")
+    link = game_target / "data.txt"
+    assert link.is_symlink()
+    # Break the recorded link into a dangling symlink.
+    link.unlink()
+    link.symlink_to(tmp_path / "missing-target")
+    # Keep state pointing at the dangling path.
+    updated, outcome = undeploy_game(config, deployed, "kcd2")
+    assert outcome.links_removed == 1
+    assert not link.exists()
+    assert len(updated.mods[0].deployed_links) == 0
+
+
+def test_deploy_replaces_owned_dangling_symlink(
+    deploy_setup: tuple[Config, Path, Path],
+    tmp_path: Path,
+) -> None:
+    config, game_target, _ = deploy_setup
+    _, state = _add_mod(config, State(), tmp_path, name="moda")
+    record = state.mods[0]
+    link = game_target / "data.txt"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(tmp_path / "missing-target")
+    state.mods[0] = record.model_copy(
+        update={
+            "deployed_links": [
+                DeployedLink(link=link, source=record.source_path / "data.txt"),
+            ]
+        }
+    )
+    updated, outcome = deploy_game(config, state, "kcd2")
+    assert outcome.links_created == 1
+    assert link.is_symlink()
+    assert link.resolve() == (record.source_path / "data.txt").resolve()
+    assert len(updated.mods[0].deployed_links) == 1
 
 
 def test_dry_run_deploy_does_not_write(

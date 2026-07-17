@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import stat
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from lmm.archive import (
     DOWNLOAD_DIRNAME,
+    ArchiveError,
     extract_archive,
     is_download_file,
     peek_archive_root_name,
@@ -65,6 +69,38 @@ def test_extract_archive_keeps_flat_layout(tmp_path: Path) -> None:
     extract_archive(archive, dest)
     assert (dest / "mod.manifest").exists()
     assert (dest / "Data" / "mod.pak").exists()
+
+
+def test_extract_archive_rejects_zip_slip(tmp_path: Path) -> None:
+    archive = tmp_path / "evil.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("../escape.txt", "pwned")
+    dest = tmp_path / "package"
+    with pytest.raises(ArchiveError, match="parent segment|escapes"):
+        extract_archive(archive, dest)
+    assert not (tmp_path / "escape.txt").exists()
+
+
+def test_extract_archive_rejects_absolute_member(tmp_path: Path) -> None:
+    archive = tmp_path / "abs.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("/tmp/evil.txt")
+        zf.writestr(info, "pwned")
+    dest = tmp_path / "package"
+    with pytest.raises(ArchiveError, match="absolute|escapes|Unsafe"):
+        extract_archive(archive, dest)
+
+
+def test_extract_archive_rejects_symlink_member(tmp_path: Path) -> None:
+    archive = tmp_path / "link.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        info = zipfile.ZipInfo("evil_link")
+        info.create_system = 3  # Unix
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        zf.writestr(info, "/tmp/target")
+    dest = tmp_path / "package"
+    with pytest.raises(ArchiveError, match="symlink"):
+        extract_archive(archive, dest)
 
 
 def test_download_dirname_constant() -> None:

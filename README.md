@@ -1,10 +1,12 @@
 # linux-mod-manager
 
-Personal CLI mod manager for Linux games and [Nexus Mods](https://www.nexusmods.com/) (`lmm`).
+Personal CLI mod manager for Linux games and [Nexus Mods](https://www.nexusmods.com/) (`lmm`). Patches welcome; no maintenance guarantee.
 
 Manage mods in a local library, deploy them into game directories via recorded symlinks, and check Nexus for version updates through API. Downloads require premium membership so not supported yet.
 
 ## Install
+
+Requires **Python 3.11+**. For `.7z` / `.rar` archives, install **p7zip** so `7z` is on `PATH`.
 
 From a local copy of this repository:
 
@@ -24,7 +26,7 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-Development (editable install + test tools):
+Development (editable install + test tools): see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
 pip install -r requirements-dev.txt
@@ -32,9 +34,9 @@ pip install -r requirements-dev.txt
 
 ## Quickstart
 
-### 1. Set environment variables
+### 1. Optional: library root and API key
 
-Get a personal API key from Nexus Mods → account settings → API Access.
+Local deploy works without Nexus. Set an API key when you want `identify` / `check`:
 
 ```bash
 export NEXUS_API_KEY="your-key-here"
@@ -48,7 +50,7 @@ export LMM_LIBRARY_ROOT="/home/user/Games/lmm/Mods"
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `NEXUS_API_KEY` | for `identify`/`check` | — | Nexus API key (overrides `nexus_api_key` in config) |
+| `NEXUS_API_KEY` | for `identify`/`check`/`mod link` | — | Nexus API key (overrides `nexus_api_key` in config) |
 | `LMM_LIBRARY_ROOT` | no | `$XDG_DATA_HOME/lmm/mods` | Mod storage root (overrides `library_root` in config) |
 
 Alternatively, create `~/.config/lmm/config.toml` manually with `library_root` and `nexus_api_key` before running any commands. The first `game add` writes config to disk; any env overrides active at that moment are persisted into `config.toml`. Unsetting `LMM_LIBRARY_ROOT` later does not change the saved path — edit config or set the env var again.
@@ -71,16 +73,18 @@ lmm game add kcd2 \
 
 ### 3. Add a mod
 
+Import a Nexus download file (archive or supported loose file), or register an existing library package:
+
 ```bash
-lmm add /path/to/mod-folder --game kcd2
-# or, if the mod already lives in your library:
+lmm add ~/Downloads/Easy\ Sharpening-68-1-2.zip --game kcd2
+# or, if the mod package already lives in your library:
 lmm add mymod --game kcd2
 ```
 
-Bulk import from a staging directory (one extracted mod per subdirectory):
+Bulk import from a downloads folder (**top-level download files** only — `.zip` / `.7z` / `.rar` / loose mod files; subdirectories are skipped):
 
 ```bash
-# ~/Downloads/kcd2-mods/moda/, modb/, ... — archives at the top level are skipped
+# ~/Downloads/kcd2-mods/moda.zip, modb.pak, ...
 lmm add ~/Downloads/kcd2-mods --game kcd2 --all
 lmm add ~/Downloads/kcd2-mods --game kcd2 --all --move   # move instead of copy
 ```
@@ -91,12 +95,17 @@ lmm add ~/Downloads/kcd2-mods --game kcd2 --all --move   # move instead of copy
 lmm deploy kcd2
 ```
 
-Preview without changes: `lmm deploy kcd2 --dry-run`
+Preview without changes (global flags go **before** the subcommand):
+
+```bash
+lmm --dry-run deploy kcd2
+```
 
 ### 5. Check for Nexus updates
 
 ```bash
-lmm identify kcd2   # match local files to Nexus mod ids
+export NEXUS_API_KEY="your-key-here"   # if not already set
+lmm identify kcd2   # match local download files to Nexus mod ids
 lmm check kcd2      # report mods with newer versions
 ```
 
@@ -113,6 +122,26 @@ lmm list kcd2
 ```
 
 Shows installed version, latest Nexus version, and update status after `check`.
+
+## Safety model
+
+- Deploy only creates **symlinks** recorded in `state.json`. Foreign files at a target path are reported as conflicts and never overwritten.
+- `undeploy` / `remove` only remove recorded symlinks (and empty dirs lmm created). Real game files are never deleted.
+- `--dry-run` prints the plan and makes **no** filesystem, config, state, or Nexus network changes.
+- Archive extract rejects Zip Slip / unsafe members. Failed `update` keeps the previous package (stage-then-swap).
+- `remove --delete-files` deletes the library package only inside `library_root` and requires `--yes`.
+
+## Troubleshooting
+
+| Problem | What to try |
+|---------|-------------|
+| Unknown game | `lmm game list` — register with `lmm game add` |
+| Missing API key | `export NEXUS_API_KEY=...` or set `nexus_api_key` in config |
+| `.7z` / `.rar` fail | Install p7zip so `7z` is on `PATH` |
+| Deploy conflicts | Move/rename the foreign file, or disable the conflicting mod |
+| Wrong layout (KCD2) | Use `--deploy-layout mod_subdir` on `game add` |
+| Mods not found after move | Update `library_root` / paths; run `lmm doctor` |
+| Global flags ignored | Put them before the command: `lmm --json list kcd2` |
 
 ## Common commands
 
@@ -226,12 +255,24 @@ library_subpath = "KingdomComeDeliverance2/Mods"
 
 Managed by `lmm`; do not edit by hand unless you know the schema. Default path above.
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `schema_version` | `1` | State format version |
-| `mods` | `[]` | List of mod records |
+```json
+{
+  "schema_version": 2,
+  "mods": [
+    {
+      "name": "easysharpening",
+      "game": "kcd2",
+      "source_path": ".../easysharpening",
+      "download_path": ".../easysharpening/download/Easy Sharpening-68-1-2.zip",
+      "enabled": true,
+      "deployed_links": [],
+      "update_available": false
+    }
+  ]
+}
+```
 
-Per-mod fields (defaults in parentheses): `name`, `game`, `source_path`, `enabled` (true), `target` (null = use `targets[0]`), `nexus_mod_id` (null), `file_id` (null), `installed_version` (null), `file_md5` (null), `deployed_links` ([]), `created_dirs` ([]), `last_checked` (null), `update_available` (false), `latest_version` (null), `notes` (null).
+Per-mod fields (defaults in parentheses): `name`, `game`, `source_path`, `download_path` (null), `enabled` (true), `target` (null = use `targets[0]`), `nexus_mod_id` (null), `file_id` (null), `installed_version` (null), `file_md5` (null), `deployed_links` ([]), `created_dirs` ([]), `last_checked` (null), `update_available` (false), `latest_version` (null), `notes` (null).
 
 ### CLI global options
 

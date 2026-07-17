@@ -15,6 +15,10 @@ class DeployError(Exception):
     """Raised when deploy or undeploy fails."""
 
 
+def _unknown_game_message(game_id: str) -> str:
+    return f"Unknown game profile: {game_id}. Run `lmm game list` or `lmm game add`."
+
+
 @dataclass
 class PlannedLink:
     mod: ModRecord
@@ -62,8 +66,7 @@ def resolve_deploy_target(config: Config, mod: ModRecord) -> Path:
     """Resolve deploy directory: default targets[0], or per-mod override."""
     profile = config.games.get(mod.game)
     if profile is None:
-        msg = f"Unknown game profile: {mod.game}"
-        raise DeployError(msg)
+        raise DeployError(_unknown_game_message(mod.game))
     if not profile.targets:
         msg = f"Game profile {mod.game} has no deploy targets configured"
         raise DeployError(msg)
@@ -110,8 +113,7 @@ def resolve_link_path(
 
 def build_link_plan(config: Config, state: State, game_id: str) -> list[PlannedLink]:
     if game_id not in config.games:
-        msg = f"Unknown game profile: {game_id}"
-        raise DeployError(msg)
+        raise DeployError(_unknown_game_message(game_id))
 
     plan: list[PlannedLink] = []
     for mod in state.mods:
@@ -124,8 +126,7 @@ def build_link_plan(config: Config, state: State, game_id: str) -> list[PlannedL
 def build_link_plan_for_mod(config: Config, mod: ModRecord) -> list[PlannedLink]:
     profile = config.games.get(mod.game)
     if profile is None:
-        msg = f"Unknown game profile: {mod.game}"
-        raise DeployError(msg)
+        raise DeployError(_unknown_game_message(mod.game))
 
     deploy_target = resolve_deploy_target(config, mod)
     source_root = mod.source_path.resolve()
@@ -150,15 +151,66 @@ def build_link_plan_for_mod(config: Config, mod: ModRecord) -> list[PlannedLink]
     return plan
 
 
-def _mkdir_parents(link: Path, created_dirs: list[Path], *, dry_run: bool) -> None:
+def _lexists(path: Path) -> bool:
+    """True when path exists on disk or is a dangling symlink."""
+    try:
+        path.lstat()
+    except (FileNotFoundError, OSError):
+        return False
+    return True
+
+
+def _path_under_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def _link_is_owned_path(link: Path, mod: ModRecord) -> bool:
+    for deployed in mod.deployed_links:
+        if deployed.link == link:
+            return True
+        try:
+            if deployed.link.resolve() == link.resolve():
+                return True
+        except OSError:
+            if deployed.link.as_posix() == link.as_posix():
+                return True
+    return False
+
+
+def _mkdir_parents(
+    link: Path,
+    created_dirs: list[Path],
+    *,
+    dry_run: bool,
+    deploy_target: Path | None = None,
+) -> None:
     parent = link.parent
-    if parent.exists() or parent == parent.parent:
+    if _lexists(parent) or parent == parent.parent:
+        if (
+            deploy_target is not None
+            and parent.is_symlink()
+            and not _path_under_root(parent, deploy_target)
+        ):
+            msg = f"Refusing to deploy through symlink outside target: {parent}"
+            raise DeployError(msg)
         return
     ancestors: list[Path] = []
     current = parent
-    while not current.exists() and current != current.parent:
+    while not _lexists(current) and current != current.parent:
         ancestors.append(current)
         current = current.parent
+    if (
+        deploy_target is not None
+        and _lexists(current)
+        and current.is_symlink()
+        and not _path_under_root(current, deploy_target)
+    ):
+        msg = f"Refusing to deploy through symlink outside target: {current}"
+        raise DeployError(msg)
     for directory in reversed(ancestors):
         if directory in created_dirs:
             continue
@@ -186,7 +238,7 @@ def _remove_mod_links(mod: ModRecord, *, dry_run: bool) -> LinkRemovalResult:
     for deployed in list(current.deployed_links):
         link = deployed.link
         source = deployed.source
-        if not link.exists():
+        if not _lexists(link):
             result.warnings.append(f"Missing link (already removed): {link}")
             current.deployed_links = [
                 item for item in current.deployed_links if item.link != deployed.link
@@ -196,6 +248,16 @@ def _remove_mod_links(mod: ModRecord, *, dry_run: bool) -> LinkRemovalResult:
         if not link.is_symlink():
             result.warnings.append(f"Not a symlink, skipping: {link}")
             result.links_skipped += 1
+            continue
+        # Dangling owned symlink: still remove (never delete real files).
+        if not link.exists():
+            if not dry_run:
+                link.unlink(missing_ok=True)
+            result.links_removed += 1
+            current.deployed_links = [
+                item for item in current.deployed_links if item.link != deployed.link
+            ]
+            result.warnings.append(f"Removed dangling symlink: {link}")
             continue
         try:
             if link.resolve() != source.resolve():
@@ -222,6 +284,64 @@ def _remove_mod_links(mod: ModRecord, *, dry_run: bool) -> LinkRemovalResult:
     return result
 
 
+def _apply_link(
+    mod: ModRecord,
+    link: Path,
+    source: Path,
+    outcome: DeployOutcome,
+    *,
+    dry_run: bool,
+    deploy_target: Path,
+) -> ModRecord:
+    """Create one planned symlink or record conflict/skip. Mutates outcome."""
+    if _lexists(link):
+        if link.is_symlink() and not link.exists():
+            if _link_is_owned_path(link, mod):
+                if not dry_run:
+                    link.unlink(missing_ok=True)
+                mod.deployed_links = [
+                    item for item in mod.deployed_links if item.link != link
+                ]
+                # Fall through to recreate.
+            else:
+                outcome.conflicts.append(
+                    f"Conflict at {link}: dangling foreign symlink",
+                )
+                return mod
+        elif link.is_symlink():
+            try:
+                same_target = link.resolve() == source.resolve()
+            except OSError:
+                same_target = False
+            if same_target and _owned_link(link, source, mod):
+                outcome.links_skipped += 1
+                return mod
+            outcome.conflicts.append(
+                f"Conflict at {link}: foreign symlink (not owned by lmm)",
+            )
+            return mod
+        else:
+            outcome.conflicts.append(
+                f"Conflict at {link}: foreign file blocks symlink",
+            )
+            return mod
+
+    created_dirs = list(mod.created_dirs)
+    if dry_run:
+        outcome.links_created += 1
+        mod.deployed_links.append(DeployedLink(link=link, source=source))
+        _mkdir_parents(link, created_dirs, dry_run=True, deploy_target=deploy_target)
+        mod.created_dirs = created_dirs
+        return mod
+
+    _mkdir_parents(link, created_dirs, dry_run=False, deploy_target=deploy_target)
+    os.symlink(source, link)
+    mod.deployed_links.append(DeployedLink(link=link, source=source))
+    mod.created_dirs = created_dirs
+    outcome.links_created += 1
+    return mod
+
+
 def deploy_game(
     config: Config,
     state: State,
@@ -244,50 +364,24 @@ def deploy_game(
         outcome.links_skipped += removal.links_skipped
         outcome.warnings.extend(removal.warnings)
 
-    plan = build_link_plan(config, state, game_id)
+    # Rebuild plan from updated (post-disable-undeploy) state view for enabled mods.
+    plan_state = state.model_copy(
+        update={"mods": [updated_mods[(m.game, m.name)] for m in state.mods]}
+    )
+    plan = build_link_plan(config, plan_state, game_id)
 
     for entry in plan:
         mod_key = (entry.mod.game, entry.mod.name)
         mod = updated_mods[mod_key]
-        link = entry.link
-        source = entry.source
-
-        if link.exists():
-            if link.is_symlink() and link.resolve() == source.resolve():
-                if _owned_link(link, source, mod):
-                    outcome.links_skipped += 1
-                    updated_mods[mod_key] = mod
-                    continue
-                outcome.conflicts.append(
-                    f"Conflict at {link}: foreign symlink (not owned by lmm)",
-                )
-                continue
-            if link.is_symlink():
-                outcome.conflicts.append(
-                    f"Conflict at {link}: foreign symlink (not owned by lmm)",
-                )
-            else:
-                outcome.conflicts.append(
-                    f"Conflict at {link}: foreign file blocks symlink",
-                )
-            continue
-
-        created_dirs = list(mod.created_dirs)
-        if dry_run:
-            outcome.links_created += 1
-            mod.deployed_links.append(DeployedLink(link=link, source=source))
-            _mkdir_parents(link, created_dirs, dry_run=True)
-            mod.created_dirs = created_dirs
-            updated_mods[mod_key] = mod
-            continue
-
-        _mkdir_parents(link, created_dirs, dry_run=False)
-        link.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(source, link)
-        mod.deployed_links.append(DeployedLink(link=link, source=source))
-        mod.created_dirs = created_dirs
-        updated_mods[mod_key] = mod
-        outcome.links_created += 1
+        deploy_target = resolve_deploy_target(config, mod)
+        updated_mods[mod_key] = _apply_link(
+            mod,
+            entry.link,
+            entry.source,
+            outcome,
+            dry_run=dry_run,
+            deploy_target=deploy_target,
+        )
 
     if dry_run:
         return state, outcome
@@ -327,44 +421,17 @@ def deploy_mod(
 
     current = mod.model_copy(deep=True)
     plan = build_link_plan_for_mod(config, current)
+    deploy_target = resolve_deploy_target(config, current)
 
     for entry in plan:
-        link = entry.link
-        source = entry.source
-
-        if link.exists():
-            if link.is_symlink() and link.resolve() == source.resolve():
-                if _owned_link(link, source, current):
-                    outcome.links_skipped += 1
-                    continue
-                outcome.conflicts.append(
-                    f"Conflict at {link}: foreign symlink (not owned by lmm)",
-                )
-                continue
-            if link.is_symlink():
-                outcome.conflicts.append(
-                    f"Conflict at {link}: foreign symlink (not owned by lmm)",
-                )
-            else:
-                outcome.conflicts.append(
-                    f"Conflict at {link}: foreign file blocks symlink",
-                )
-            continue
-
-        created_dirs = list(current.created_dirs)
-        if dry_run:
-            outcome.links_created += 1
-            current.deployed_links.append(DeployedLink(link=link, source=source))
-            _mkdir_parents(link, created_dirs, dry_run=True)
-            current.created_dirs = created_dirs
-            continue
-
-        _mkdir_parents(link, created_dirs, dry_run=False)
-        link.parent.mkdir(parents=True, exist_ok=True)
-        os.symlink(source, link)
-        current.deployed_links.append(DeployedLink(link=link, source=source))
-        current.created_dirs = created_dirs
-        outcome.links_created += 1
+        current = _apply_link(
+            current,
+            entry.link,
+            entry.source,
+            outcome,
+            dry_run=dry_run,
+            deploy_target=deploy_target,
+        )
 
     if dry_run:
         return state, outcome
@@ -421,8 +488,7 @@ def undeploy_game(
     dry_run: bool = False,
 ) -> tuple[State, UndeployOutcome]:
     if game_id not in config.games:
-        msg = f"Unknown game profile: {game_id}"
-        raise DeployError(msg)
+        raise DeployError(_unknown_game_message(game_id))
 
     outcome = UndeployOutcome(dry_run=dry_run)
     updated_mods: dict[tuple[str, str], ModRecord] = {

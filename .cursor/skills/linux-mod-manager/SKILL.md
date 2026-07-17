@@ -23,6 +23,7 @@ Nexus Mods version-update checking.
 - Deployment: symlinks, stow-like, every created link recorded so removal is exact and safe.
 - Nexus: free account, check-only. No downloads via API. Local state file is the source of truth and works offline.
 - Games: config-driven per-game profiles. Each game has a **default deploy target** (`targets[0]`), **deploy layout** (`flat`, `mod_subdir`, or `mirror`), and **default library subpath**; per-mod `target` overrides deploy dir for exceptions only. Proton/Wine prefix mapping is deferred.
+- Library packages: download-first — Nexus archives/loose files live under `download/` inside each mod package; archives are extracted into the package root. `.7z`/`.rar` require system `7z`.
 
 ## When working in this project
 
@@ -31,7 +32,7 @@ Nexus Mods version-update checking.
    - Nexus API endpoints, auth, rate limits, version check, md5 identify: [nexus-api.md](nexus-api.md)
    - Phased milestones and acceptance criteria: [roadmap.md](roadmap.md)
 2. Respect the locked decisions above. If a decision must change, update the skill files in the same change.
-3. Build in roadmap phase order (P1 -> P4). Do not start a later phase before earlier acceptance criteria pass.
+3. Build in roadmap phase order (P1 -> P7). Do not start a later phase before earlier acceptance criteria pass. P1–P4 and post-MVP (0.3–0.4) are complete; active work is P5–P7 toward v1.0.0.
 4. Keep the state file backward compatible: add fields, do not repurpose existing ones; bump `schema_version` on breaking changes and provide a migration.
 
 ## Component overview
@@ -42,6 +43,7 @@ flowchart LR
   core --> state[(state.json)]
   core --> cfg[(config.toml)]
   core --> deploy[Symlink deploy engine]
+  core --> library[Library / archive]
   core --> nexus[Nexus v1 client]
   deploy --> game[Game install dirs]
   nexus --> api[api.nexusmods.com]
@@ -49,7 +51,7 @@ flowchart LR
 
 ## CLI surface
 
-Global options: `--config PATH`, `--dry-run`, `--json`, `--verbose`.
+Global options (must precede the subcommand): `--config PATH`, `--state PATH`, `--dry-run`, `--json`, `--verbose`.
 
 | Command | Purpose |
 |---------|---------|
@@ -58,26 +60,28 @@ Global options: `--config PATH`, `--dry-run`, `--json`, `--verbose`.
 | `lmm game target add <id> --target <path> [--target ...]` | Append deploy target(s) to an existing game profile |
 | `lmm game target list <id>` | List deploy targets with indices for `--target-index` |
 | `lmm game target remove <id> --index <n> [--index ...]` | Remove secondary deploy target(s); index 0 cannot be removed |
-| `lmm add <name_or_path> --game <id> [--mod-id N] [--name NAME] [--move] [--all] [--target-index N \| --target-path PATH]` | Import/register a mod; bare name resolves under game's library dir (P2); `--all` imports each immediate subdirectory from a staging dir |
-| `lmm list [game]` | List mods (name, game, version, enabled, deployed) |
+| `lmm add <name_or_path> --game <id> [--mod-id N] [--mod-url URL] [--name NAME] [--move] [--all] [--target-index N \| --target-path PATH]` | Import/register a mod; bare name resolves under game's library dir; `--all` imports each top-level download file (`.zip`/`.7z`/`.rar`/loose) from a staging dir — subdirectories are skipped |
+| `lmm update <mod> <file> --game <id>` / `lmm update <dir> --game <id> --all [--only-updates] [--no-deploy]` | Refresh an installed package from a downloaded Nexus file (or bulk from a folder) |
+| `lmm mod link <mod> --game <id> (--mod-id N \| --url URL)` | Attach Nexus mod_id/version metadata without re-importing |
+| `lmm list [game]` | List mods (name, game, version, enabled, deployed, update status) |
 | `lmm enable <mod>` / `lmm disable <mod>` | Toggle whether a mod deploys (run `deploy` afterward to apply) |
 | `lmm deploy <game>` | Reconcile game dir: remove disabled mods' links, symlink enabled mods |
 | `lmm undeploy <game> [--yes]` | Remove only the symlinks recorded in state |
 | `lmm remove <mod> [--yes] [--delete-files]` | Unregister mod from state; undeploy links first |
 | `lmm doctor` | Validate config, paths, and mod setup |
-| `lmm identify <game>` | md5_search local files -> Nexus mod_id/version, fill state |
+| `lmm identify <game>` | md5_search local download files -> Nexus mod_id/version, fill state |
 | `lmm check <game>` | Compare installed version vs Nexus latest; report updates (no download) |
 
-Conventions: a mod is referenced by its `name` (unique within a game) or `game/name`. `deploy` exits 1 on conflicts; `undeploy`/`remove` prompt on TTY unless `--yes`. `--dry-run` prints planned actions without filesystem, network, or state writes (including `identify`/`check`). `identify` exits 1 on API failures or unmatched mods; partial Nexus state is saved.
+Conventions: a mod is referenced by its `name` (unique within a game) or `game/name`. `deploy` exits 1 on conflicts; `undeploy`/`remove` prompt on TTY unless `--yes`. `--dry-run` prints planned actions without filesystem, network, config, or state writes (including `identify`/`check`/`add`/`update`/`game add`/enable/disable/`mod link`). `identify` exits 1 on API failures or unmatched mods; partial Nexus state is saved when not dry-run.
 
 ## Tech stack
 
-- HTTP: `httpx` (preferred) or `requests`.
-- CLI framework: `typer` (preferred) or `click`.
+- HTTP: `httpx`.
+- CLI framework: `typer`.
 - Models/validation: `pydantic` v2.
 - Config: stdlib `tomllib` to read, `tomli-w` to write.
 - Output: `rich` (tables, status).
-- Packaging: `pyproject.toml` with a `lmm` console entry point.
+- Packaging: `pyproject.toml` with a `lmm` console entry point. Keep `__version__` in sync with `pyproject.toml`.
 
 ## Key invariants
 
@@ -85,20 +89,21 @@ Conventions: a mod is referenced by its `name` (unique within a game) or `game/n
 - `undeploy` must only remove links present in `deployed_links`; never delete real game files.
 - CryEngine / per-mod-folder games (KCD1, KCD2, Stalker 2) require `deploy_layout = "mod_subdir"`.
 - Detect conflicts before linking: if a target path exists and is not an lmm-owned symlink, abort that link and report it.
+- Archive extract must reject Zip Slip, absolute paths, `..`, and symlink members; failed `update` must not leave a wiped package.
 - Nexus API key comes from `NEXUS_API_KEY` env or `config.toml`; never log or commit it.
 - `library_root` comes from `LMM_LIBRARY_ROOT` env or `config.toml`; set before first `game add` if not using the default.
 - Cache Nexus responses and stay within rate limits (see [nexus-api.md](nexus-api.md)).
 
 ## Tooling & conventions
 
-- Formatting + linting: `ruff` for Python (use `ruff format` and `ruff check`; do not add black/isort/flake8). `taplo` for TOML (`pyproject.toml`, `config.toml`). `prettier` optional for Markdown/JSON/YAML.
-- Type checking: `ty` (Astral) or `mypy`/`pyright`. Type-annotate public functions and all pydantic models.
+- Formatting + linting: `ruff` for Python (use `ruff format` and `ruff check`; do not add black/isort/flake8).
+- Type checking: `ty` (Astral). Type-annotate public functions and all pydantic models.
 - Tests: `pytest`. Map `roadmap.md` acceptance criteria to tests; use temp dirs/`tmp_path` for filesystem and a mocked Nexus client for network.
-- Run tools locally as needed; no pre-commit hooks. CI is enforced via GitHub Actions workflows that run lint (ruff, taplo) and tests (pytest) on PRs.
+- Run tools locally as needed; no pre-commit hooks. CI runs ruff, ty, and pytest on PRs and pushes (Python 3.11–3.13).
 - Dependency locking: `pip-tools`. Source: `requirements.in` / `requirements-dev.in`; lockfiles: `requirements.txt` / `requirements-dev.txt`. After changing `pyproject.toml`, run `pip-compile` on both `.in` files and commit the updated `.txt` files. CI installs from `requirements-dev.txt`.
-- Keep `ruff`/`taplo` config in `pyproject.toml` (and `taplo.toml` if needed) so local and CI runs match.
+- Keep `ruff`/`ty` config in `pyproject.toml` so local and CI runs match.
 
-## Project layout (target)
+## Project layout
 
 ```
 linux-mod-manager/
@@ -108,17 +113,27 @@ linux-mod-manager/
 ├── requirements-dev.in      # dev dep intent (-e .[dev])
 ├── requirements-dev.txt     # pinned dev lock (pip-compile)
 ├── README.md
-├── .github/workflows/   # CI: lint (ruff, taplo) + test (pytest) on PRs
+├── LICENSE
+├── CHANGELOG.md
+├── CONTRIBUTING.md
+├── docs/commands.md
+├── .github/workflows/   # CI: ruff + ty + pytest
 ├── tests/
 └── src/lmm/
     ├── __init__.py
     ├── cli.py            # typer app, subcommands
     ├── config.py         # load/save config.toml, profiles
     ├── state.py          # state.json load/save, models, migrations
-    ├── library.py        # import/list mods
+    ├── library.py        # import/list/update mods
+    ├── archive.py        # zip/7z/rar extract, download-file detection
     ├── deploy.py         # symlink engine, conflict detection
     ├── doctor.py         # setup validation
+    ├── paths.py          # XDG defaults, path safety helpers
+    ├── io.py             # atomic writes
+    ├── logging_config.py # logging + API key masking
     └── nexus/
         ├── client.py     # v1 REST client, auth, rate limit, cache
-        └── updates.py    # version compare, md5 identify
+        ├── updates.py    # version compare, md5 identify
+        ├── updates_hash.py
+        └── link.py       # attach Nexus metadata by mod id/URL
 ```
