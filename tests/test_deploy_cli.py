@@ -5,6 +5,7 @@ from __future__ import annotations
 import zipfile
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from helpers import plain_cli_output
@@ -490,3 +491,163 @@ def test_cli_update_all_only_updates(
     )
     assert result.exit_code == 0, result.output
     assert "SKIP modb.zip: not_flagged" in result.output
+
+
+def test_cli_dry_run_game_add_does_not_write(
+    runner: CliRunner,
+    cli_args: list[str],
+    data_dir: Path,
+    game_target: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            *cli_args,
+            "--dry-run",
+            "game",
+            "add",
+            "newgame",
+            "--domain",
+            "example",
+            "--target",
+            str(game_target),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "dry-run" in plain_cli_output(result.output).lower()
+    from lmm.config import ConfigStore
+
+    config = ConfigStore(data_dir / "config.toml").load()
+    assert "newgame" not in config.games
+
+
+def test_cli_dry_run_enable_does_not_write(
+    runner: CliRunner,
+    cli_args: list[str],
+    data_dir: Path,
+    kcd2_with_mod_minimal: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        [*cli_args, "--dry-run", "disable", "mod", "--game", "kcd2"],
+    )
+    assert result.exit_code == 0, result.output
+    state = StateStore(data_dir / "state.json").load()
+    assert state.mods[0].enabled is True
+
+
+def test_cli_dry_run_add_does_not_import(
+    runner: CliRunner,
+    cli_args: list[str],
+    data_dir: Path,
+    kcd2_profile: None,
+) -> None:
+    archive = data_dir / "incoming" / "dry.zip"
+    _make_mod_zip(archive, "drymod")
+    result = runner.invoke(
+        app,
+        [*cli_args, "--dry-run", "add", str(archive), "--game", "kcd2"],
+    )
+    assert result.exit_code == 0, result.output
+    state = StateStore(data_dir / "state.json").load()
+    assert state.mods == []
+    assert not any(
+        (data_dir / "library").rglob("drymod"),
+    )
+
+
+def test_cli_dry_run_undeploy(
+    runner: CliRunner,
+    cli_args: list[str],
+    game_target: Path,
+    kcd2_with_mod_minimal: Path,
+) -> None:
+    deploy = runner.invoke(app, [*cli_args, "deploy", "kcd2"])
+    assert deploy.exit_code == 0, deploy.output
+    assert (game_target / "a.txt").is_symlink()
+
+    result = runner.invoke(
+        app,
+        [*cli_args, "--dry-run", "undeploy", "kcd2", "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert (game_target / "a.txt").is_symlink()
+
+
+def test_cli_list_rejects_conflicting_game_filters(
+    runner: CliRunner,
+    cli_args: list[str],
+    kcd2_profile: None,
+) -> None:
+    result = runner.invoke(
+        app,
+        [*cli_args, "list", "kcd2", "--game", "other"],
+    )
+    assert result.exit_code != 0
+    assert "Conflicting game filters" in plain_cli_output(result.output)
+
+
+def test_cli_mod_link_dry_run_skips_network(
+    runner: CliRunner,
+    cli_args: list[str],
+    data_dir: Path,
+    kcd2_with_mod_minimal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("NexusClient must not be constructed in dry-run")
+
+    monkeypatch.setattr("lmm.cli.NexusClient", boom)
+    result = runner.invoke(
+        app,
+        [
+            *cli_args,
+            "--dry-run",
+            "mod",
+            "link",
+            "mod",
+            "--game",
+            "kcd2",
+            "--mod-id",
+            "68",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "dry-run" in plain_cli_output(result.output).lower()
+    state = StateStore(data_dir / "state.json").load()
+    assert state.mods[0].nexus_mod_id is None
+
+
+def test_cli_update_dry_run_keeps_package(
+    runner: CliRunner,
+    cli_args: list[str],
+    data_dir: Path,
+    kcd2_profile: None,
+) -> None:
+    archive_v1 = data_dir / "incoming" / "moda.zip"
+    _make_mod_zip(archive_v1, "moda")
+    add = runner.invoke(app, [*cli_args, "add", str(archive_v1), "--game", "kcd2"])
+    assert add.exit_code == 0, add.output
+    state = StateStore(data_dir / "state.json").load()
+    manifest = state.mods[0].source_path / "file.txt"
+    original = manifest.read_text(encoding="utf-8")
+
+    archive_v2 = data_dir / "incoming" / "moda-v2.zip"
+    with zipfile.ZipFile(archive_v2, "w") as zf:
+        zf.writestr("moda/file.txt", "updated")
+
+    result = runner.invoke(
+        app,
+        [
+            *cli_args,
+            "--dry-run",
+            "update",
+            "moda",
+            str(archive_v2),
+            "--game",
+            "kcd2",
+            "--no-deploy",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert manifest.read_text(encoding="utf-8") == original

@@ -29,6 +29,13 @@ class NexusError(Exception):
     """Raised when Nexus API access fails."""
 
 
+def _missing_api_key_message() -> str:
+    return (
+        "Nexus API key missing. Set NEXUS_API_KEY or nexus_api_key in config.toml "
+        "(Nexus → account settings → API Access)."
+    )
+
+
 @dataclass
 class RateLimitStatus:
     hourly_remaining: int | None = None
@@ -58,8 +65,7 @@ class NexusClient:
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         if not api_key or not api_key.strip():
-            msg = "Nexus API key missing. Set NEXUS_API_KEY or config.nexus_api_key."
-            raise NexusError(msg)
+            raise NexusError(_missing_api_key_message())
         self.api_key = api_key.strip()
         self.base_url = base_url.rstrip("/")
         self.cache_path = cache_path or _default_cache_path()

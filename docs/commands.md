@@ -11,9 +11,20 @@ These apply to every subcommand:
 | `--config PATH` | `~/.config/lmm/config.toml` | Path to `config.toml` |
 | `--state PATH` | `~/.local/share/lmm/state.json` | Path to `state.json` |
 | `--json` | off | Emit machine-readable JSON instead of tables |
-| `--dry-run` | off | Print planned actions without filesystem, network, or state writes |
+| `--dry-run` | off | Print planned actions without filesystem, network, config, or state writes |
 | `--verbose`, `-v` | off | Enable debug logging (API keys are masked) |
 | `--version` | — | Print version and exit |
+
+**Global options must precede the subcommand** (e.g. `lmm --dry-run deploy kcd2`, not `lmm deploy --dry-run kcd2`).
+
+`.7z` / `.rar` import and update require system `7z` (p7zip).
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Error, conflicts, identify unmatched mods, or per-mod Nexus failures |
 
 Environment variables respected by defaults:
 

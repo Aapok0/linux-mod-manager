@@ -21,7 +21,10 @@ class FakeNexusClient:
         **_: Any,
     ) -> None:
         if api_key is not None and not api_key:
-            msg = "Nexus API key missing. Set NEXUS_API_KEY or config.nexus_api_key."
+            msg = (
+                "Nexus API key missing. Set NEXUS_API_KEY or nexus_api_key in "
+                "config.toml (Nexus → account settings → API Access)."
+            )
             raise NexusError(msg)
         self.updated_payload = updated_payload or [{"mod_id": 42}, {"mod_id": 43}]
         self.fail_first_md5 = fail_first_md5

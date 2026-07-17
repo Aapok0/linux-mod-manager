@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +31,10 @@ from lmm.state import ModRecord, State, add_mod_record, update_mod_record
 
 class LibraryError(Exception):
     """Raised when a library operation fails."""
+
+
+def _unknown_game_message(game_id: str) -> str:
+    return f"Unknown game profile: {game_id}. Run `lmm game list` or `lmm game add`."
 
 
 class ImportAction(enum.StrEnum):
@@ -150,18 +155,6 @@ def _replace_download_file(
     return destination, UpdateAction.MOVED
 
 
-def _wipe_package_content(package_root: Path) -> None:
-    for entry in package_root.iterdir():
-        if entry.name.startswith("."):
-            continue
-        if entry.name == DOWNLOAD_DIRNAME:
-            continue
-        if entry.is_dir():
-            shutil.rmtree(entry)
-        else:
-            entry.unlink()
-
-
 def _populate_package_from_download(
     download_path: Path,
     package_root: Path,
@@ -189,12 +182,21 @@ def _import_file_package(
     *,
     name: str | None,
     copy: bool,
+    dry_run: bool = False,
 ) -> tuple[Path, Path, ImportAction]:
     mod_name = _derive_mod_name(source, name)
     package_root = resolve_mod_destination(config, game_id, mod_name)
     if package_root.exists():
         msg = f"Destination already exists: {package_root}"
         raise LibraryError(msg)
+    download_path = package_root / DOWNLOAD_DIRNAME / source.name
+    if dry_run:
+        action = (
+            ImportAction.EXTRACTED
+            if is_archive(source) or is_loose_download(source)
+            else (ImportAction.COPIED if copy else ImportAction.MOVED)
+        )
+        return package_root, download_path, action
     package_root.mkdir(parents=True, exist_ok=True)
     download_path, file_action = _store_download_file(
         source,
@@ -269,8 +271,7 @@ def import_mods_from_directory(
     dry_run: bool = False,
 ) -> tuple[State, list[ImportResult], list[ImportFailure], list[ImportSkip]]:
     if game_id not in config.games:
-        msg = f"Unknown game profile: {game_id}"
-        raise LibraryError(msg)
+        raise LibraryError(_unknown_game_message(game_id))
 
     parent = parent.resolve()
     if not parent.exists():
@@ -352,8 +353,7 @@ def import_mods_from_directory(
 def game_library_dir(config: Config, game_id: str) -> Path:
     profile = config.games.get(game_id)
     if profile is None:
-        msg = f"Unknown game profile: {game_id}"
-        raise LibraryError(msg)
+        raise LibraryError(_unknown_game_message(game_id))
     if profile.library_subpath:
         return resolve_under_root(
             config.library_root,
@@ -399,10 +399,10 @@ def import_mod(
     nexus_mod_id: int | None = None,
     target: int | str | None = None,
     copy: bool = True,
+    dry_run: bool = False,
 ) -> tuple[State, ModRecord, ImportAction]:
     if game_id not in config.games:
-        msg = f"Unknown game profile: {game_id}"
-        raise LibraryError(msg)
+        raise LibraryError(_unknown_game_message(game_id))
 
     source = source.resolve()
     if not source.exists():
@@ -423,6 +423,7 @@ def import_mod(
                 game_id,
                 name=name,
                 copy=copy,
+                dry_run=dry_run,
             )
             mod_name = package_root.name
         elif source.is_dir():
@@ -458,6 +459,8 @@ def import_mod(
         nexus_mod_id=nexus_mod_id,
         target=target,
     )
+    if dry_run:
+        return state, record, action
     updated_state = add_mod_record(state, record)
     return updated_state, record, action
 
@@ -546,6 +549,55 @@ def _download_is_current(mod: ModRecord, source: Path) -> bool:
     return False
 
 
+def _build_package_staging(
+    source: Path,
+    staging_root: Path,
+    *,
+    copy: bool,
+) -> tuple[Path, UpdateAction]:
+    """Stage a package from a download file without touching the live package."""
+    staging_root.mkdir(parents=True, exist_ok=True)
+    stored_path, file_action = _replace_download_file(
+        source,
+        staging_root,
+        copy=copy,
+    )
+    _populate_package_from_download(stored_path, staging_root)
+    action = (
+        UpdateAction.EXTRACTED
+        if is_archive(stored_path) or is_loose_download(stored_path)
+        else UpdateAction(file_action.value)
+    )
+    return stored_path, action
+
+
+def _swap_package_root(package_root: Path, staging_root: Path) -> None:
+    """Atomically replace package_root with staging_root; restore on failure."""
+    parent = package_root.parent
+    backup = Path(
+        tempfile.mkdtemp(prefix=f".{package_root.name}.bak-", dir=parent),
+    )
+    # mkdtemp creates an empty dir; remove so rename can use the name.
+    backup.rmdir()
+    try:
+        package_root.rename(backup)
+    except OSError as exc:
+        shutil.rmtree(staging_root, ignore_errors=True)
+        msg = f"Failed to backup mod package for update: {package_root}: {exc}"
+        raise LibraryError(msg) from exc
+    try:
+        staging_root.rename(package_root)
+    except OSError as exc:
+        try:
+            backup.rename(package_root)
+        except OSError:
+            pass
+        shutil.rmtree(staging_root, ignore_errors=True)
+        msg = f"Failed to install updated mod package: {package_root}: {exc}"
+        raise LibraryError(msg) from exc
+    shutil.rmtree(backup, ignore_errors=True)
+
+
 def refresh_mod_package(
     mod: ModRecord,
     source: Path,
@@ -586,22 +638,26 @@ def refresh_mod_package(
             UpdateAction.EXTRACTED if is_archive(source) else UpdateAction.COPIED,
         )
 
-    _wipe_package_content(package_root)
-    stored_path, file_action = _replace_download_file(
-        source,
-        package_root,
-        copy=copy,
+    parent = package_root.parent
+    staging_root = Path(
+        tempfile.mkdtemp(prefix=f".{package_root.name}.new-", dir=parent),
     )
-    _populate_package_from_download(stored_path, package_root)
-    action = (
-        UpdateAction.EXTRACTED
-        if is_archive(stored_path) or is_loose_download(stored_path)
-        else UpdateAction(file_action.value)
-    )
+    try:
+        stored_path, action = _build_package_staging(
+            source,
+            staging_root,
+            copy=copy,
+        )
+    except (LibraryError, ArchiveError, OSError):
+        shutil.rmtree(staging_root, ignore_errors=True)
+        raise
+    # After staging succeeds, swap into place (package untouched until rename).
+    final_download = package_root / DOWNLOAD_DIRNAME / stored_path.name
+    _swap_package_root(package_root, staging_root)
     return (
         mod.model_copy(
             update={
-                "download_path": stored_path.resolve(),
+                "download_path": final_download.resolve(),
                 "file_md5": file_md5,
                 "update_available": False,
             }
@@ -651,8 +707,7 @@ def update_mod(
     client: object | None = None,
 ) -> tuple[State, ModRecord, UpdateAction]:
     if mod.game not in config.games:
-        msg = f"Unknown game profile: {mod.game}"
-        raise LibraryError(msg)
+        raise LibraryError(_unknown_game_message(mod.game))
 
     current_mod = _find_mod_by_name(state, mod.game, mod.name)
     if current_mod is None:
@@ -686,7 +741,8 @@ def update_mod(
         copy=copy,
         dry_run=dry_run,
     )
-    record = apply_nexus_metadata_after_update(config, record, client=client)
+    if not dry_run:
+        record = apply_nexus_metadata_after_update(config, record, client=client)
 
     if dry_run:
         return state, record, action
@@ -706,8 +762,7 @@ def update_mods_from_directory(
     client: object | None = None,
 ) -> tuple[State, list[UpdateResult], list[UpdateFailure], list[UpdateSkip]]:
     if game_id not in config.games:
-        msg = f"Unknown game profile: {game_id}"
-        raise LibraryError(msg)
+        raise LibraryError(_unknown_game_message(game_id))
 
     parent = parent.resolve()
     if not parent.exists():
