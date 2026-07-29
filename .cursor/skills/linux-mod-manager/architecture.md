@@ -6,15 +6,21 @@ Detailed design for `lmm`. Read [SKILL.md](SKILL.md) first.
 
 | Module | Responsibility |
 |--------|----------------|
-| `cli.py` | Typer app; parses args, wires services, formats output via rich. No business logic. |
+| `cli.py` | Typer app; parses args, wires services, formats output via rich. Prefer thin command handlers. |
 | `config.py` | Read/write `config.toml`; resolve paths; expose `GameProfile` objects; resolve API key from env or file. |
 | `state.py` | Load/save `state.json`; pydantic models; `schema_version`; migrations. |
-| `library.py` | Import a mod directory into `library_root`; list mods; resolve mod references (`name` or `game/name`). Archive import deferred to a later phase. |
+| `library.py` | Import/list/update mods; resolve mod references (`name` or `game/name`); download-first package layout. |
+| `archive.py` | Detect download files; extract `.zip`/`.7z`/`.rar` safely (Zip Slip rejection); parse Nexus download filenames. |
 | `deploy.py` | Symlink engine: plan, conflict-check, create, record, remove. |
+| `doctor.py` | Validate config, library, targets, deploy drift, layouts, Nexus readiness. |
+| `paths.py` | XDG defaults; path-segment and root-containment validation. |
+| `io.py` | Atomic file writes. |
+| `logging_config.py` | Logging setup with API-key masking. |
 | `nexus/client.py` | v1 REST client: auth header, retry/backoff, rate-limit accounting, on-disk response cache. |
-| `nexus/updates.py` | Version comparison and md5 identify, mapping local files to Nexus mod/version. |
+| `nexus/updates.py` | Version comparison and md5 identify, mapping local download files to Nexus mod/version. |
+| `nexus/link.py` | Attach Nexus metadata to a mod by mod id or Nexus URL. |
 
-Dependency direction: `cli` -> services (`config`, `state`, `library`, `deploy`, `nexus`). Services do not import `cli`. `deploy` and `nexus` depend on `state`/`config` models only.
+Dependency direction: `cli` -> services (`config`, `state`, `library`, `deploy`, `nexus`, `doctor`). Services do not import `cli`. `deploy` and `nexus` depend on `state`/`config` models only. `library` uses `archive` for package population.
 
 ## Config schema (`~/.config/lmm/config.toml`)
 
@@ -56,14 +62,17 @@ Notes:
 
 ## State schema (`~/.local/share/lmm/state.json`)
 
+Current `schema_version` is **2** (`download_path` added; v1 states migrate automatically).
+
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "mods": [
     {
       "name": "easysharpening",
       "game": "kcd2",
       "source_path": "/home/aapoko/Games/StowMods/Mods/KingdomComeDeliverance2/Mods/easysharpening",
+      "download_path": "/home/aapoko/Games/StowMods/Mods/KingdomComeDeliverance2/Mods/easysharpening/download/Easy Sharpening-68-1-2.zip",
       "enabled": true,
       "target": null,
       "nexus_mod_id": null,
@@ -83,14 +92,31 @@ Notes:
 
 Field semantics:
 - `name`: unique per `game`. Mod reference is `name` or `game/name`.
-- `source_path`: canonical location of the mod inside `library_root`.
+- `source_path`: canonical package directory inside `library_root` (extracted content + `download/`).
+- `download_path`: path to the stored Nexus download file under `source_path/download/` (used by identify/md5).
 - `target`: optional deploy override. `null` = use `targets[0]` (the default); integer = `targets[n]`; string = absolute path. Most mods leave this `null`.
-- `nexus_mod_id` / `file_id` / `installed_version` / `file_md5`: filled by `add --mod-id` or `identify`.
+- `nexus_mod_id` / `file_id` / `installed_version` / `file_md5`: filled by `add --mod-id`/`--mod-url`, `mod link`, or `identify`.
 - `deployed_links`: list of `{link, source}` absolute-path pairs lmm created. Authoritative for `undeploy`.
 - `last_checked`, `update_available`, `latest_version`: populated by `check`.
 - `notes`: optional user notes.
 
-Migrations: read `schema_version`; if older, run ordered migration functions and rewrite. Adding optional fields is non-breaking and does not require a bump. The migration scaffold (`MIGRATIONS`, `migrate_state`) is in place; bump `schema_version` only when a breaking change requires it.
+Migrations: read `schema_version`; if older, run ordered migration functions and rewrite. Adding optional fields is non-breaking and does not require a bump. v1→v2 adds `download_path: null`. Bump `schema_version` only when a breaking change requires it.
+
+## Download-first library packages
+
+Each mod package under the game library dir looks like:
+
+```
+easysharpening/
+  download/
+    Easy Sharpening-68-1-2.zip   # original Nexus file (for identify / re-hash)
+  Data/...                         # extracted (or copied loose) content
+```
+
+- `lmm add <archive|loose>` copies/moves the file into `download/`, extracts/copies content into the package root, and sets `download_path`.
+- `lmm add <dir> --all` imports each **top-level download file** in that directory (archives and supported loose suffixes). Immediate subdirectories are skipped (not treated as mod folders).
+- `lmm update` replaces the stored download and refreshes package content. Must be transactional: stage then swap (or restore backup) so a failed extract never leaves a wiped package.
+- `.zip` uses stdlib; `.7z`/`.rar` shell out to system `7z`. Extract must reject Zip Slip / absolute / `..` / symlink members.
 
 ## Symlink deploy engine (`deploy.py`)
 
@@ -118,21 +144,22 @@ Rules:
   1. `mod.target` is `null` → `profile.targets[0]` (default; common case).
   2. `mod.target` is int `n` → `profile.targets[n]` (bounds-checked).
   3. `mod.target` is str → use as absolute deploy path (exception mods).
-- For each file under the mod source, compute the link path via `resolve_link_path(profile, mod, deploy_target, source_file, source_root)`:
+- For each file under the mod source (excluding `download/`), compute the link path via `resolve_link_path(profile, mod, deploy_target, source_file, source_root)`:
   - **`flat`** / **`mirror`**: `deploy_target / relpath` (mod source relative path).
   - **`mod_subdir`**: `deploy_target / mod.name / relpath` (one subdirectory per mod; required for KCD2, Stalker 2).
 - `mirror` uses the same path math as `flat`; the difference is convention: deploy target is the game install root and mod sources contain game-relative prefixes (e.g. `Content/Paks/~mods/...`). Doctor validates mirror mods have nested source paths.
 - Create parent dirs as real directories when needed (record created dirs so empty ones can be cleaned on undeploy). Prefer file-level links so multiple mods can share a directory.
-- Conflict detection before creating any link:
+- Conflict detection: prefer preflight over mid-mutation surprises.
   - Path free -> create link, record it.
   - Path is a symlink lmm created (in `deployed_links`) -> idempotent, skip.
   - Path exists and is a real file/dir or a foreign symlink -> conflict; do not overwrite; collect and report at the end.
+  - Dangling symlinks: detect via lstat/`lexists`, not `Path.exists()` alone.
 - `--dry-run`: print the plan, change nothing.
 
 ### Undeploy flow
 
 - Iterate only `deployed_links` for the game's mods.
-- Remove each link if it still points to the recorded source; if changed/missing, warn and skip (never delete real files).
+- Remove each link if it still points to the recorded source; if changed/missing, warn and skip (never delete real files). Dangling links that match recorded paths may be unlinked after lstat confirms they are symlinks.
 - Remove now-empty directories that lmm created.
 - Clear `deployed_links` for affected mods; save state.
 
@@ -143,13 +170,14 @@ Rules:
 Most games: one default deploy dir (`targets[0]`) and one library subpath. Oblivion-style games may list multiple deploy targets; only exception mods set `target`.
 
 - `lmm game target add/list/remove` manage `profile.targets` after registration. Index 0 is the primary default and cannot be removed. Removing index `n` decrements `mod.target` for mods with higher indices; removal is blocked if any mod references that index.
-- `lmm add` accepts `--target-index N` or `--target-path PATH` for those exceptions (P2). Omit both for the default.
-- `lmm add <mod_name> --game <id>` (P2): when the argument has no path separators and `game_library_dir/<mod_name>` exists, register that directory without a full path.
-- A future enhancement: per-mod, per-subpath routing rules. Keep the data model open but implement only single-target-per-mod in P2.
+- `lmm add` accepts `--target-index N` or `--target-path PATH` for those exceptions. Omit both for the default.
+- `lmm add <mod_name> --game <id>`: when the argument has no path separators and `game_library_dir/<mod_name>` exists, register that directory without a full path.
+- A future enhancement: per-mod, per-subpath routing rules. Keep the data model open but implement only single-target-per-mod for now.
 
 ## Error handling
 
-- Fail loudly on: missing game profile, unreadable library root, foreign-file conflicts, path escape attempts.
+- Fail loudly on: missing game profile, unreadable library root, foreign-file conflicts, path escape attempts, unsafe archive members.
 - Config/state load failures surface as `ConfigError` / `StateError` with actionable messages.
+- Prefer recovery hints: unknown game → `lmm game list`; missing API key → set `NEXUS_API_KEY`; missing `7z` → install p7zip.
 - Degrade gracefully on: missing/changed links during undeploy, Nexus network/rate-limit errors during `check`/`identify` (report and continue; exit 1 if any per-mod failures occurred).
-- `--dry-run` skips filesystem mutations, Nexus API calls, and state writes (including `identify`/`check` plan-only output).
+- **`--dry-run` contract:** no filesystem mutations, no Nexus API calls, no config or state writes — for every mutating command, including `identify`/`check` (plan-only output).

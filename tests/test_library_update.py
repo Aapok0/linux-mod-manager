@@ -71,6 +71,30 @@ def test_refresh_mod_package_preserves_nexus_id(
     assert (record.source_path / "mod.manifest").read_text(encoding="utf-8") == "v2"
 
 
+def test_refresh_mod_package_keeps_package_on_bad_archive(
+    config_with_game: Config,
+    tmp_path: Path,
+) -> None:
+    archive_v1 = tmp_path / "moda.zip"
+    _make_mod_zip(archive_v1, "moda", manifest="v1")
+    _, record, _ = import_mod(config_with_game, State(), archive_v1, game_id="kcd2")
+    original_manifest = (record.source_path / "mod.manifest").read_text(
+        encoding="utf-8",
+    )
+
+    bad = tmp_path / "moda-v2.zip"
+    with zipfile.ZipFile(bad, "w") as zf:
+        zf.writestr("../escape.txt", "pwned")
+
+    with pytest.raises(LibraryError, match="Unsafe archive|parent segment"):
+        refresh_mod_package(record, bad)
+
+    assert (record.source_path / "mod.manifest").read_text(
+        encoding="utf-8"
+    ) == original_manifest
+    assert record.source_path.is_dir()
+
+
 def test_refresh_mod_package_already_current_raises(
     config_with_game: Config,
     tmp_path: Path,

@@ -210,7 +210,7 @@ def _print_bulk_import_summary(
     failures: list[ImportFailure],
     skips: list[ImportSkip],
 ) -> None:
-    prefix = "[dry-run] " if dry_run else ""
+    prefix = "(dry-run) " if dry_run else ""
     if results:
         imported = ", ".join(
             f"{item.record.name} ({item.action.value})" for item in results
@@ -250,7 +250,7 @@ def _print_bulk_update_summary(
     failures: list[UpdateFailure],
     skips: list[UpdateSkip],
 ) -> None:
-    prefix = "[dry-run] " if dry_run else ""
+    prefix = "(dry-run) " if dry_run else ""
     if results:
         console.print(f"{prefix}Update {game}: {len(results)} mod(s) updated")
     elif not failures and not skips:
@@ -373,6 +373,16 @@ def game_add(
             )
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
+        if app_ctx.dry_run:
+            if app_ctx.as_json:
+                payload = updated.games[game_id].model_dump(mode="json")
+                payload["dry_run"] = True
+                typer.echo(json.dumps(payload, indent=2))
+                return
+            console.print(
+                f"(dry-run) Would add game profile [bold]{game_id}[/bold]",
+            )
+            return
         store.save(updated)
         if app_ctx.as_json:
             typer.echo(
@@ -446,6 +456,16 @@ def game_target_add(
                 updated = add_game_target(updated, game_id, path)
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
+        if app_ctx.dry_run:
+            if app_ctx.as_json:
+                payload = updated.games[game_id].model_dump(mode="json")
+                payload["dry_run"] = True
+                typer.echo(json.dumps(payload, indent=2))
+                return
+            console.print(
+                f"(dry-run) Would add deploy target(s) to [bold]{game_id}[/bold]",
+            )
+            return
         store.save(updated)
         if app_ctx.as_json:
             typer.echo(updated.games[game_id].model_dump_json(indent=2))
@@ -467,7 +487,10 @@ def game_target_list(
         config = _config_store(app_ctx).load()
         profile = config.games.get(game_id)
         if profile is None:
-            raise typer.BadParameter(f"Unknown game profile: {game_id}")
+            raise typer.BadParameter(
+                f"Unknown game profile: {game_id}. "
+                "Run `lmm game list` or `lmm game add`."
+            )
         if app_ctx.as_json:
             payload = {
                 "targets": [
@@ -507,7 +530,10 @@ def game_target_remove(
         config = config_store.load()
         state = state_store.load()
         if game_id not in config.games:
-            raise typer.BadParameter(f"Unknown game profile: {game_id}")
+            raise typer.BadParameter(
+                f"Unknown game profile: {game_id}. "
+                "Run `lmm game list` or `lmm game add`."
+            )
 
         indices = sorted(set(index), reverse=True)
         if app_ctx.dry_run:
@@ -519,7 +545,7 @@ def game_target_remove(
                 }
                 typer.echo(json.dumps(payload, indent=2))
                 return
-            prefix = "[dry-run] "
+            prefix = "(dry-run) "
             console.print(
                 f"{prefix}Would remove deploy target index(es) "
                 f"[{', '.join(str(i) for i in indices)}] from {game_id}",
@@ -672,7 +698,18 @@ def mod_add(
             nexus_mod_id=mod_id,
             target=target_override,
             copy=not move,
+            dry_run=app_ctx.dry_run,
         )
+        if app_ctx.dry_run:
+            if app_ctx.as_json:
+                payload = record.model_dump(mode="json")
+                payload["import_action"] = action.value
+                payload["dry_run"] = True
+                typer.echo(json.dumps(payload, indent=2))
+                return
+            prefix = "(dry-run) "
+            console.print(f"{prefix}{_import_action_message(action, record)}")
+            return
         if mod_id is not None or mod_url is not None:
             with _nexus_client(app_ctx, config_store) as client:
                 client.validate_key()
@@ -829,7 +866,7 @@ def mod_update(
             if failures or deploy_failures:
                 raise typer.Exit(1)
 
-        if api_key:
+        if api_key and not app_ctx.dry_run:
             with _nexus_client(app_ctx, config_store) as client:
                 client.validate_key()
                 apply_updates(client)
@@ -855,6 +892,10 @@ def mod_list(
     ] = None,
 ) -> None:
     """List registered mods."""
+    if game is not None and game_arg is not None and game != game_arg:
+        raise typer.BadParameter(
+            f"Conflicting game filters: positional {game_arg!r} vs --game {game!r}"
+        )
     filter_game = game or game_arg
 
     def run() -> None:
@@ -929,6 +970,23 @@ def mod_link(
         config = config_store.load()
         state = state_store.load()
         record = find_mod(state, mod, default_game=game)
+        if app_ctx.dry_run:
+            ref = f"{record.game}/{record.name}"
+            target = f"mod-id {mod_id}" if mod_id is not None else f"url {url}"
+            if app_ctx.as_json:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "dry_run": True,
+                            "mod": ref,
+                            "link": target,
+                        },
+                        indent=2,
+                    )
+                )
+                return
+            console.print(f"(dry-run) Would link mod [bold]{ref}[/bold] via {target}")
+            return
         with _nexus_client(app_ctx, config_store) as client:
             client.validate_key()
             try:
@@ -992,7 +1050,7 @@ def mod_deploy(
             if outcome.conflicts:
                 raise typer.Exit(1)
             return
-        prefix = "[dry-run] " if app_ctx.dry_run else ""
+        prefix = "(dry-run) " if app_ctx.dry_run else ""
         summary = (
             f"{prefix}Deploy {game}: "
             f"{outcome.links_created} link(s) created, "
@@ -1052,7 +1110,7 @@ def mod_undeploy(
             }
             typer.echo(json.dumps(payload, indent=2))
             return
-        prefix = "[dry-run] " if app_ctx.dry_run else ""
+        prefix = "(dry-run) " if app_ctx.dry_run else ""
         console.print(
             f"{prefix}Undeploy {game}: "
             f"{outcome.links_removed} link(s) removed, "
@@ -1127,7 +1185,7 @@ def mod_remove(
             }
             typer.echo(json.dumps(payload, indent=2))
             return
-        prefix = "[dry-run] " if app_ctx.dry_run else ""
+        prefix = "(dry-run) " if app_ctx.dry_run else ""
         console.print(
             f"{prefix}Removed mod [bold]{mod_ref}[/bold]: "
             f"{outcome.links_removed} link(s) removed",
@@ -1195,6 +1253,23 @@ def mod_enable(
         state_store = _state_store(app_ctx)
         state = state_store.load()
         updated, record = set_mod_enabled(state, mod, enabled=True, default_game=game)
+        if app_ctx.dry_run:
+            if app_ctx.as_json:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "dry_run": True,
+                            "mod": f"{record.game}/{record.name}",
+                            "enabled": True,
+                        },
+                        indent=2,
+                    )
+                )
+                return
+            console.print(
+                f"(dry-run) Would enable mod [bold]{record.game}/{record.name}[/bold]"
+            )
+            return
         state_store.save(updated)
         if app_ctx.as_json:
             typer.echo(
@@ -1229,6 +1304,23 @@ def mod_disable(
         state_store = _state_store(app_ctx)
         state = state_store.load()
         updated, record = set_mod_enabled(state, mod, enabled=False, default_game=game)
+        if app_ctx.dry_run:
+            if app_ctx.as_json:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "dry_run": True,
+                            "mod": f"{record.game}/{record.name}",
+                            "enabled": False,
+                        },
+                        indent=2,
+                    )
+                )
+                return
+            console.print(
+                f"(dry-run) Would disable mod [bold]{record.game}/{record.name}[/bold]"
+            )
+            return
         state_store.save(updated)
         if app_ctx.as_json:
             typer.echo(
@@ -1277,7 +1369,7 @@ def mod_identify(
                 }
                 typer.echo(json.dumps(payload, indent=2))
                 return
-            prefix = "[dry-run] "
+            prefix = "(dry-run) "
             console.print(
                 f"{prefix}Identify {game}: would query Nexus for {len(planned)} mod(s)",
             )
@@ -1392,7 +1484,7 @@ def mod_check(
                 }
                 typer.echo(json.dumps(payload, indent=2))
                 return
-            prefix = "[dry-run] "
+            prefix = "(dry-run) "
             console.print(
                 f"{prefix}Check {game}: would query Nexus for "
                 f"{len(planned)} stale mod(s)",

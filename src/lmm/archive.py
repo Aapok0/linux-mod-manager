@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import re
 import shutil
+import stat
 import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
+
+from lmm.paths import path_within_root
 
 _NEXUS_DOWNLOAD_FILENAME = re.compile(
     r"-(?P<mod_id>\d+)-[\d.]+(?:-\d+)?$",
@@ -29,6 +32,9 @@ LOOSE_DOWNLOAD_SUFFIXES = frozenset(
         ".bsa",
     }
 )
+
+_ZIP_SYMLINK_MASK = 0o170000
+_ZIP_SYMLINK_TYPE = 0o120000
 
 
 class ArchiveError(Exception):
@@ -65,7 +71,6 @@ def peek_archive_root_name(archive: Path) -> str | None:
         staging = Path(tmp)
         _extract_with_7z(archive, staging)
         return _single_top_level_dir_name(staging)
-    return None
 
 
 def _peek_zip_root_name(archive: Path) -> str | None:
@@ -80,13 +85,12 @@ def _peek_zip_root_name(archive: Path) -> str | None:
             roots.add(parts[0])
         if len(roots) == 1:
             root = next(iter(roots))
-            with zipfile.ZipFile(archive) as zf2:
-                for name in zf2.namelist():
-                    if name.startswith("__MACOSX/"):
-                        continue
-                    rel = Path(name)
-                    if len(rel.parts) == 1 and rel.name and not name.endswith("/"):
-                        return None
+            for name in zf.namelist():
+                if name.startswith("__MACOSX/"):
+                    continue
+                rel = Path(name)
+                if len(rel.parts) == 1 and rel.name and not name.endswith("/"):
+                    return None
             return root
     return None
 
@@ -98,12 +102,82 @@ def _single_top_level_dir_name(staging: Path) -> str | None:
     return None
 
 
+def _zip_member_is_symlink(info: zipfile.ZipInfo) -> bool:
+    mode = (info.external_attr >> 16) & 0xFFFF
+    if mode and (mode & _ZIP_SYMLINK_MASK) == _ZIP_SYMLINK_TYPE:
+        return True
+    # MS-DOS attribute bit for reparse/symlink is uncommon; create_system 3 = Unix.
+    return False
+
+
+def _safe_zip_member_path(name: str, dest: Path) -> Path:
+    if not name or name.endswith("/"):
+        # Directory entries are created implicitly when extracting files.
+        return dest
+    if "\x00" in name:
+        msg = f"Unsafe archive member path (NUL): {name!r}"
+        raise ArchiveError(msg)
+    member = Path(name)
+    if (
+        member.is_absolute()
+        or name.startswith(("/", "\\"))
+        or name.startswith(("~/", "~\\"))
+    ):
+        msg = f"Unsafe archive member path (absolute): {name!r}"
+        raise ArchiveError(msg)
+    if ".." in member.parts:
+        msg = f"Unsafe archive member path (parent segment): {name!r}"
+        raise ArchiveError(msg)
+    dest_root = dest.resolve()
+    target = (dest / member).resolve()
+    if not path_within_root(target, dest_root):
+        msg = f"Unsafe archive member path (escapes destination): {name!r}"
+        raise ArchiveError(msg)
+    return dest / member
+
+
+def _assert_extracted_tree_safe(root: Path) -> None:
+    root_resolved = root.resolve()
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            msg = f"Archive extraction produced a symlink: {path}"
+            raise ArchiveError(msg)
+        if not path_within_root(path, root_resolved):
+            msg = f"Archive extraction escaped destination: {path}"
+            raise ArchiveError(msg)
+
+
 def _extract_zip(archive: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(archive) as zf:
-        zf.extractall(dest)
+        for info in zf.infolist():
+            name = info.filename
+            if not name or name.startswith("__MACOSX/"):
+                continue
+            if _zip_member_is_symlink(info):
+                msg = f"Refusing to extract symlink from archive: {name!r}"
+                raise ArchiveError(msg)
+            if name.endswith("/"):
+                _safe_zip_member_path(name.rstrip("/") + "/.", dest)
+                continue
+            target = _safe_zip_member_path(name, dest)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(info, "r") as src, target.open("wb") as out:
+                shutil.copyfileobj(src, out)
+            # Preserve executable bit when present (Unix).
+            mode = (info.external_attr >> 16) & 0xFFFF
+            if mode and mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+                target.chmod(target.stat().st_mode | (mode & 0o111))
+    _assert_extracted_tree_safe(dest)
 
 
 def _extract_with_7z(archive: Path, dest: Path) -> None:
+    if shutil.which("7z") is None:
+        msg = (
+            f"Cannot extract {archive.name}: '7z' not found on PATH. "
+            "Install p7zip (e.g. pacman -S p7zip / apt install p7zip-full)."
+        )
+        raise ArchiveError(msg)
     dest.mkdir(parents=True, exist_ok=True)
     result = subprocess.run(
         ["7z", "x", str(archive), f"-o{dest}", "-y"],
@@ -117,6 +191,7 @@ def _extract_with_7z(archive: Path, dest: Path) -> None:
         if detail:
             msg = f"{msg}: {detail}"
         raise ArchiveError(msg)
+    _assert_extracted_tree_safe(dest)
 
 
 def _extract_to_staging(archive: Path, staging: Path) -> None:
@@ -140,7 +215,7 @@ def _promote_extracted_root(staging: Path, dest: Path) -> None:
         if item.is_dir():
             if target.exists():
                 shutil.rmtree(target)
-            shutil.copytree(item, target)
+            shutil.copytree(item, target, symlinks=False)
         else:
             shutil.copy2(item, target)
 
