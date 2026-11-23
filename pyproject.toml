@@ -42,7 +42,7 @@ Issues = "https://github.com/Aapok0/linux-mod-manager/issues"
 dev = [
     "pip-tools>=7.5,<8",
     "pytest>=9.1",
-    "pytest-cov>=6,<7",
+    "pytest-cov>=7,<8",
     "ruff>=0.15,<0.16",
     "ty>=0.0.56,<0.1",
 ]
